@@ -23,17 +23,26 @@ public sealed class KeyboardService : IAsyncDisposable
     private readonly IJSRuntime _js;
     private readonly DiagnosticsLog _diagnostics;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly SettingsService _prefs;
     private KeyboardSession? _session;
     private SimulatedKeyboardConnection? _sim;
     private WebHidKeyboardConnection? _webhid;
     private IJSObjectReference? _module;
 
-    public KeyboardService(KeyboardStore store, IJSRuntime js, DiagnosticsLog diagnostics, ILoggerFactory loggerFactory)
+    public KeyboardService(
+        KeyboardStore store,
+        IJSRuntime js,
+        DiagnosticsLog diagnostics,
+        ILoggerFactory loggerFactory,
+        SettingsService prefs)
     {
         _store = store;
         _js = js;
         _diagnostics = diagnostics;
         _loggerFactory = loggerFactory;
+        // Read here rather than passed in by the caller, so that every way into demo mode honours
+        // the setting — there is no second entry point that could quietly stay an A75.
+        _prefs = prefs;
     }
 
     /// <summary>
@@ -64,10 +73,16 @@ public sealed class KeyboardService : IAsyncDisposable
     public bool IsConnected => _session is not null;
 
     /// <summary>
-    /// Connects to a fully simulated keyboard (an A75 by default) and starts polling. No hardware
-    /// or browser HID support required — this is how the deployed site is explorable and how
-    /// development happens without the one physical board.
+    /// Connects to a fully simulated keyboard and starts polling. No hardware or browser HID
+    /// support required — this is how the deployed site is explorable and how development happens
+    /// without the one physical board.
     /// </summary>
+    /// <remarks>
+    /// The board it pretends to be is an A75 unless test mode names another — see
+    /// <see cref="AppSettings.TestModel"/>. Only the identity is faked; the session then builds the
+    /// board out of that model's real layout and geometry, which is what makes test mode worth
+    /// looking at rather than a drawing of itself.
+    /// </remarks>
     public async Task ConnectDemoAsync(CancellationToken ct = default)
     {
         if (_session is not null) await DisconnectAsync().ConfigureAwait(false);
@@ -75,7 +90,16 @@ public sealed class KeyboardService : IAsyncDisposable
         _store.SetConnecting(demo: true);
         try
         {
-            _sim = new SimulatedKeyboardConnection { IdleJitter = true };
+            // A slug that no longer resolves falls back to the A75 rather than refusing to connect:
+            // the setting comes out of browser storage and can outlive the model it names, and the
+            // demo board is not worth failing over. GetInfo(null) is not a thing, so the null check
+            // stays here rather than inside it.
+            var slug    = _prefs.Current.TestModel;
+            var variant = _prefs.Current.TestVariant ?? TestBoards.DefaultVariant;
+            var model   = slug is null ? null : ModelRegistry.GetInfo(slug);
+            if (model is null) variant = TestBoards.DefaultVariant;
+
+            _sim = new SimulatedKeyboardConnection(model, variant: variant) { IdleJitter = true };
             // Opened through the async factory even though the simulator offers both surfaces, so
             // demo mode runs the same async-only session shape a real WebHID board does — and its
             // traffic reaches the diagnostics page by the same path.

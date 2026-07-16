@@ -25,7 +25,8 @@ public class ProfileCaptureTests
 	public async Task SetUp()
 	{
 		_service = new KeyboardService(
-			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance);
+			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance,
+			TestSettings.Default());
 		await _service.ConnectDemoAsync();
 	}
 
@@ -306,7 +307,8 @@ public class ProfileCaptureTests
 		// A second session has learned nothing, so it may claim nothing…
 		await _service.DisposeAsync();
 		_service = new KeyboardService(
-			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance);
+			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance,
+			TestSettings.Default());
 		await _service.ConnectDemoAsync();
 		Assert.That(_service.SensitivityIsKnown, Is.False, "a reconnect starts back at the seed");
 

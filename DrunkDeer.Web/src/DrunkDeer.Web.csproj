@@ -27,7 +27,7 @@
     <!-- The SDK this app is a front end for. It was a ProjectReference while both lived in one
          repository; a released package is what replaces that. Moving to a newer SDK is now a
          deliberate bump of this number rather than something a git pull does to you. -->
-    <PackageReference Include="DrunkDeerSDK" Version="0.2.0" />
+    <PackageReference Include="DrunkDeerSDK" Version="0.2.1" />
   </ItemGroup>
 
 </Project>

@@ -25,7 +25,8 @@ public class ActiveProfileTests
 	public async Task SetUp()
 	{
 		_store = new KeyboardStore();
-		_keyboard = new KeyboardService(_store, new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance);
+		_keyboard = new KeyboardService(_store, new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance,
+			TestSettings.Default());
 		await _keyboard.ConnectDemoAsync();
 		_active = new ActiveProfile(_keyboard, _store);
 	}

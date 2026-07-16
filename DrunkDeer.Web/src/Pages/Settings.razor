@@ -135,6 +135,49 @@
         }
     </MudPaper>
 
+    @* ── Test mode ──────────────────────────────────────────────────────── *@
+
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudText Typo="Typo.h6" Class="mb-1">Test mode</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">
+            Which keyboard demo mode pretends to be.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudSelect T="string" Value="@TestBoardKey" ValueChanged="SetTestBoard"
+                   Label="Demo keyboard" Variant="Variant.Outlined" Margin="Margin.Dense">
+            <MudSelectItem T="string" Value="@DefaultBoardKey">A75 (default)</MudSelectItem>
+            @foreach (var board in TestBoards.All)
+            {
+                <MudSelectItem T="string" Value="@Key(board)">
+                    @board.Name@(board.HasGeometry ? "" : " — no layout yet")
+                </MudSelectItem>
+            }
+        </MudSelect>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block ml-1 mt-1">
+            Demo mode simulates an A75. Pick another board here and it reports that model instead,
+            so you can see how its keys are laid out without owning one. This only changes what the
+            <b>simulated</b> keyboard says it is — a real keyboard is still whatever it actually is.
+        </MudText>
+
+        @if (SelectedBoard is { HasGeometry: false } board)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                There's no on-screen layout for the @board.Name yet, so the dashboard will say so
+                instead of drawing a keyboard. Everything else still works.
+            </MudAlert>
+        }
+
+        @if (Store.IsDemo && !IsShowing(Store))
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                Demo mode is already running as a different board. Reconnect from the
+                <MudLink Href="/">Connect</MudLink> page to pick this one up.
+            </MudAlert>
+        }
+    </MudPaper>
+
     <MudText Typo="Typo.caption" Color="Color.Secondary">
         Settings are saved as you change them, in this browser only — like your profiles. Clearing
         this site's data resets them.
@@ -160,6 +203,47 @@
         {
             Snackbar.Add($"Couldn't read saved profiles: {ex.Message}", Severity.Error);
         }
+    }
+
+    // ── Test mode ──────────────────────────────────────────────────────────
+    // The picker carries one string because a board is a (slug, variant) pair and MudSelect matches
+    // its items by value — two bound fields would have no single thing to match on. The pair is
+    // still what's stored, so nothing else in the app has to know this spelling.
+
+    /// <summary>The picker's value for "the A75, as demo mode has always been". Empty, not null: MudSelect matches on value.</summary>
+    private const string DefaultBoardKey = "";
+
+    private static string Key(TestBoard board) => $"{board.Slug}/{board.Variant}";
+
+    private TestBoard? SelectedBoard => TestBoards.Find(_edited.TestModel, _edited.TestVariant);
+
+    private string TestBoardKey => SelectedBoard is { } b ? Key(b) : DefaultBoardKey;
+
+    /// <summary>Whether the demo session that's actually running is the board now picked.</summary>
+    /// <remarks>
+    /// The choice only takes effect on the next connect — the simulator reports its model in the
+    /// identity handshake, which has already happened — so the page says so rather than letting the
+    /// user think the board on screen changed under them.
+    /// </remarks>
+    private bool IsShowing(KeyboardStore store)
+    {
+        var session = Keyboard.Session;
+        if (session is null) return true;
+
+        var slug    = _edited.TestModel ?? DrunkDeer.Protocol.ModelSlugs.A75;
+        var variant = _edited.TestVariant ?? TestBoards.DefaultVariant;
+        return session.Model.Slug == slug && session.Variant == variant;
+    }
+
+    private Task SetTestBoard(string? key)
+    {
+        var board = string.IsNullOrEmpty(key) ? null : TestBoards.All.FirstOrDefault(b => Key(b) == key);
+        // Stored as null rather than "a75"/"ansi" when it's the default, so "has the user chosen a
+        // board" stays one question with one answer — and so the default follows the app if it ever
+        // stops being the A75.
+        _edited.TestModel   = board?.Slug;
+        _edited.TestVariant = board?.Variant;
+        return SaveAsync();
     }
 
     private Task SetLiveEdit(bool on)

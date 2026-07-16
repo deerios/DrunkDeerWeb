@@ -92,6 +92,37 @@ public sealed class AppSettings
     /// </remarks>
     public string? GitHubUsername { get; set; }
 
+    /// <summary>
+    /// The model slug demo mode advertises, e.g. <c>"g65"</c>. Null — the default — is the A75,
+    /// which is what demo mode was before this existed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This fakes the <em>identity handshake</em>, nothing else: the simulator reports the chosen
+    /// model and the session builds the board from that model's real layout and geometry. So it
+    /// shows a genuine answer to "what would this board look like", which is the point — it is how
+    /// a layout gets looked at without owning eleven keyboards.
+    /// </para>
+    /// <para>
+    /// It cannot touch a real keyboard: the model is only ever handed to the simulator, and
+    /// connecting over WebHID reads the identity off the hardware as it always did. A slug that no
+    /// longer exists falls back to the A75 rather than failing to connect — see
+    /// <see cref="KeyboardService.ConnectDemoAsync"/>.
+    /// </para>
+    /// </remarks>
+    public string? TestModel { get; set; }
+
+    /// <summary>
+    /// The variant demo mode advertises alongside <see cref="TestModel"/>, e.g. <c>"ansi"</c>.
+    /// Null is "ansi", the variant every model but the JP G75 ships.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the slug because the pair is what identifies a board: geometry is stored per
+    /// model+variant, so an A75 ISO and an A75 ANSI are different boards to look at, and one of
+    /// them deliberately has no geometry yet.
+    /// </remarks>
+    public string? TestVariant { get; set; }
+
     /// <summary>A copy, so the settings page can edit one without the live one changing under the app.</summary>
     public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }

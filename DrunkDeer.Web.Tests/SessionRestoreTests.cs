@@ -31,7 +31,8 @@ public class SessionRestoreTests
 	public async Task SetUp()
 	{
 		_store = new KeyboardStore();
-		_keyboard = new KeyboardService(_store, new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance);
+		_keyboard = new KeyboardService(_store, new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance,
+			TestSettings.Default());
 		await _keyboard.ConnectDemoAsync();
 
 		_profileStorage = new FakeProfileStorage();

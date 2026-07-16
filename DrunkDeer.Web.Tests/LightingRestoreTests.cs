@@ -24,7 +24,8 @@ public class LightingRestoreTests
 	public async Task SetUp()
 	{
 		_service = new KeyboardService(
-			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance);
+			new KeyboardStore(), new StubJsRuntime(), new DiagnosticsLog(), NullLoggerFactory.Instance,
+			TestSettings.Default());
 		await _service.ConnectDemoAsync();
 	}
 
