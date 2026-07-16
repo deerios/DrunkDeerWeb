@@ -1,0 +1,70 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Pages deployment needs to write an artifact and mint an id-token; the default
+# GITHUB_TOKEN grants neither.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A queued deploy should carry the newest commit, so let an in-flight run finish
+# rather than cancelling it — a half-applied deploy is worse than a slow one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish
+        run: dotnet publish DrunkDeer.Web/src/DrunkDeer.Web.csproj -c Release -o publish --nologo
+
+      # The app is served from https://deerios.github.io/DrunkDeerWeb/, not from the root of
+      # that host. Both files ship with a root base path so that `dotnet run` works without
+      # ceremony, and are rewritten here rather than committed with the subpath baked in.
+      - name: Point the app at the Pages subpath
+        run: |
+          sed -i 's|<base href="/" />|<base href="/DrunkDeerWeb/" />|' publish/wwwroot/index.html
+          sed -i 's|const base = "/";|const base = "/DrunkDeerWeb/";|' publish/wwwroot/service-worker.js
+          grep -q '<base href="/DrunkDeerWeb/" />' publish/wwwroot/index.html
+          grep -q 'const base = "/DrunkDeerWeb/";' publish/wwwroot/service-worker.js
+
+      # Pages serves through Jekyll by default, which drops directories starting with an
+      # underscore — that would be _framework, i.e. the whole app.
+      - name: Disable Jekyll
+        run: touch publish/wwwroot/.nojekyll
+
+      # Pages has no routing table, so a reload on /DrunkDeerWeb/settings is a 404. Serving the
+      # app as the 404 body hands the deep link back to the Blazor router, which knows the route.
+      - name: Serve the app for deep links
+        run: cp publish/wwwroot/index.html publish/wwwroot/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: publish/wwwroot
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
