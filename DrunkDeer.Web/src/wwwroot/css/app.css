@@ -1,0 +1,122 @@
+/* MudBlazor owns component styling. This file styles the pre-Blazor boot splash
+   and the framework error bar, plus a dark backdrop so the initial paint (before
+   MudThemeProvider mounts) isn't a white flash — and the handful of utility
+   classes that have to be global to work at all (see .no-select).
+
+   The colours below are literal copies of Theme.cs's surfaces and default accent,
+   because nothing here can read the MudBlazor palette: this paints before the app
+   exists. They are the Zits neutral ramp — background is neutral-950, the spinner
+   track neutral-800, its text neutral-400 — and the spinner's accent is the same
+   red the theme falls back to when no keyboard is connected. If Theme.cs changes,
+   change these to match. */
+
+html, body {
+    margin: 0;
+    background-color: #0a0a0a;
+}
+
+h1:focus {
+    outline: none;
+}
+
+/* Panels and stat tiles whose text is a readout rather than a document. Dragging across one is
+   nearly always someone reaching for a control or rubber-banding the board behind it, and a blue
+   smear of half-selected labels is the only thing that ever comes of it.
+
+   Global rather than scoped to the page that asks for it: the class lands on a MudPaper, whose root
+   element Blazor doesn't stamp with a scope attribute, so an isolated `.no-select` would be
+   rewritten to `.no-select[b-xxx]` and match nothing. */
+.no-select {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* The board's column. A marquee is drawn inside .board but legitimately overhangs it — a drag that
+   starts in the room around the board rubber-bands out there — and the panel column beside it is
+   positioned, comes later in DOM order and so paints over that overhang: the rubber band slides
+   under the card instead of over it. Lifting this column above costs nothing, because the two
+   columns sit side by side and their boxes never otherwise overlap.
+
+   Global for the same reason as .no-select: the class lands on a MudItem that Blazor doesn't stamp
+   with a scope attribute. */
+.board-column {
+    position: relative;
+    z-index: 1;
+}
+
+/* Fields opt back in. user-select inherits, and these panels contain the profile name and the hex
+   colour boxes, which have to stay selectable to be editable.
+
+   Insurance rather than a fix for anything visible today: measured in Chromium 150, an input under
+   .no-select does inherit the computed value none, but still selects and edits normally, because
+   engines special-case editable content. Kept because the inheritance is real and an engine is free
+   to act on it — but don't let anyone claim removing it breaks something here, because it doesn't. */
+    .no-select input,
+    .no-select textarea,
+    .no-select [contenteditable="true"] {
+        user-select: text;
+        -webkit-user-select: text;
+    }
+
+#blazor-error-ui {
+    color-scheme: light only;
+    background: lightyellow;
+    bottom: 0;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    box-sizing: border-box;
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
+    position: fixed;
+    width: 100%;
+    z-index: 3000;
+}
+
+    #blazor-error-ui .dismiss {
+        cursor: pointer;
+        position: absolute;
+        right: 0.75rem;
+        top: 0.5rem;
+    }
+
+.loading-progress {
+    position: absolute;
+    display: block;
+    width: 8rem;
+    height: 8rem;
+    inset: 20vh 0 auto 0;
+    margin: 0 auto 0 auto;
+}
+
+    .loading-progress circle {
+        fill: none;
+        stroke: #262626;
+        stroke-width: 0.6rem;
+        transform-origin: 50% 50%;
+        transform: rotate(-90deg);
+    }
+
+        .loading-progress circle:last-child {
+            stroke: #fb2c36;
+            stroke-dasharray: calc(3.141 * var(--blazor-load-percentage, 0%) * 0.8), 500%;
+            transition: stroke-dasharray 0.05s ease-in-out;
+        }
+
+.loading-progress-text {
+    position: absolute;
+    text-align: center;
+    font-weight: bold;
+    color: #a1a1a1;
+    inset: calc(20vh + 3.25rem) 0 auto 0.2rem;
+}
+
+    .loading-progress-text:after {
+        content: var(--blazor-load-percentage-text, "Loading");
+    }
+
+/* The gallery's search box. Global rather than scoped for the reason the rest of this file exists:
+   the class lands on a MudTextField's root, which Blazor doesn't stamp with a scope attribute, so a
+   scoped `.gallery-search` would be rewritten to something that never matches. */
+.gallery-search {
+    max-width: 320px;
+}

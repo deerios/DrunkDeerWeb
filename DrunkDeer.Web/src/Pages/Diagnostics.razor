@@ -1,0 +1,301 @@
+@page "/diagnostics"
+@using System.Text
+@using DrunkDeer.Protocol
+@inject DiagnosticsLog Log
+@inject KeyboardStore Store
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* What actually crossed the wire, named by the SDK's own packet oracle. This is the page to open
+   when the app and the keyboard disagree about something: everything else in this app shows what
+   the SDK believes, and this shows what was actually said.
+
+   Deliberately works while disconnected. A board that has just dropped is exactly when the last
+   few packets matter most, and navigating here shouldn't be what destroys them. *@
+
+<PageTitle>Diagnostics</PageTitle>
+
+<div class="d-flex align-center mb-4">
+    <MudText Typo="Typo.h5">Diagnostics</MudText>
+    <MudSpacer />
+    <MudButton Class="mr-2" Variant="Variant.Outlined" Size="Size.Small"
+               StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="CopyTrace"
+               Disabled="@(_entries.Count == 0)">Copy trace</MudButton>
+    <MudButton Variant="Variant.Outlined" Size="Size.Small"
+               StartIcon="@Icons.Material.Filled.DeleteSweep" OnClick="Clear">Clear</MudButton>
+</div>
+
+@if (!Store.IsConnected)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4">
+        Not connected — this is whatever was recorded up to now.
+        <MudLink Href="">Connect a keyboard</MudLink> to record more.
+    </MudAlert>
+}
+
+<MudGrid Class="mb-4">
+    <MudItem xs="6" sm="3">
+        <MudPaper Class="pa-3" Elevation="1">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Poll rate</MudText>
+            <MudText Typo="Typo.h6">@_pollRate.ToString("0") Hz</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="6" sm="3">
+        <MudPaper Class="pa-3" Elevation="1">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Sent</MudText>
+            <MudText Typo="Typo.h6">@_sent.ToString("N0")</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">@Bytes(_bytesSent)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="6" sm="3">
+        <MudPaper Class="pa-3" Elevation="1">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Received</MudText>
+            <MudText Typo="Typo.h6">@_received.ToString("N0")</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">@Bytes(_bytesReceived)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="6" sm="3">
+        <MudPaper Class="pa-3" Elevation="1">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Timeouts</MudText>
+            @* Not an error on its own — the poll loop expects the odd one and retries. It earns
+               attention when it climbs while the board is supposedly connected. *@
+            <MudText Typo="Typo.h6" Color="@(_timeouts > 0 ? Color.Warning : Color.Default)">@_timeouts.ToString("N0")</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudPaper Class="pa-4" Elevation="1">
+    <div class="d-flex align-center flex-wrap gap-3 mb-3">
+        <MudSelect T="TraceCapture" Value="@_capture" ValueChanged="OnCaptureChanged"
+                   Label="Record" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense"
+                   Style="max-width: 260px;">
+            <MudSelectItem Value="@TraceCapture.ConfigOnly">Everything except polling</MudSelectItem>
+            <MudSelectItem Value="@TraceCapture.Everything">Everything</MudSelectItem>
+            <MudSelectItem Value="@TraceCapture.Paused">Nothing (paused)</MudSelectItem>
+        </MudSelect>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="capture-hint">
+            @CaptureHint(_capture)
+        </MudText>
+    </div>
+
+    @if (_entries.Count == 0)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            Nothing recorded yet. @(Store.IsConnected
+                ? "Change a setting on the dashboard and it will appear here."
+                : "Connect a keyboard to record its traffic.")
+        </MudText>
+    }
+    else
+    {
+        @* The scrolling, the monospace face and the height cap live on this div rather than on
+           MudSimpleTable's own root, which belongs to that component and carries none of this
+           page's scope attribute — styling it from here silently does nothing. *@
+        <div class="trace">
+        <MudSimpleTable Dense="true" Hover="true" Striped="false" Elevation="0">
+            <thead>
+                <tr>
+                    <th class="col-time">Time</th>
+                    <th class="col-dir"></th>
+                    <th class="col-what">Packet</th>
+                    <th class="col-bytes">Bytes</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _entries)
+                {
+                    <tr @key="row.Entry.Sequence" class="@(row.Failed ? "failed" : null)">
+                        <td class="col-time">@row.Entry.At.TotalSeconds.ToString("0.000")</td>
+                        <td class="col-dir @DirectionClass(row.Entry.Kind)">@Marker(row.Entry.Kind)</td>
+                        <td class="col-what">
+                            <span class="name">@row.Name</span>
+                            @if (row.Detail is not null)
+                            {
+                                <span class="detail">@row.Detail</span>
+                            }
+                        </td>
+                        <td class="col-bytes" title="@row.FullHex">@row.Hex</td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+        </div>
+
+        @if (_evicted > 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                Showing the most recent @_entries.Count. @_evicted.ToString("N0") older
+                @(_evicted == 1 ? "entry has" : "entries have") been dropped.
+            </MudText>
+        }
+    }
+</MudPaper>
+
+@code {
+    // The timeline is read on a timer rather than pushed from the log: at poll rate an event per
+    // packet would re-render this page hundreds of times a second. Four times a second is faster
+    // than anyone reads and cheap enough not to compete with the board's own animation.
+    private const int RefreshMs = 250;
+
+    // A screenful of history, well under the log's own capacity. Every row costs a classification
+    // per refresh, so this is the number that decides what this page costs to leave open.
+    private const int Rows = 100;
+
+    private readonly List<Row> _entries = [];
+    private TraceCapture _capture;
+    private double _pollRate;
+    private int _sent, _received, _timeouts;
+    private long _bytesSent, _bytesReceived, _evicted;
+    private bool _running;
+
+    // A row is built once per refresh and held, so classification happens per displayed packet
+    // rather than per captured one — the log stores raw bytes for exactly this reason.
+    private sealed record Row(TraceEntry Entry, string Name, string? Detail, string Hex, string FullHex, bool Failed);
+
+    protected override void OnInitialized()
+    {
+        _capture = Log.Capture;
+        Store.Changed += OnStoreChanged;
+        _running = true;
+        _ = RefreshLoop();
+    }
+
+    private async Task RefreshLoop()
+    {
+        while (_running)
+        {
+            Refresh();
+            StateHasChanged();
+            await Task.Delay(RefreshMs);
+        }
+    }
+
+    private void Refresh()
+    {
+        _pollRate = Log.PollRateHz;
+        _sent = Log.PacketsSent;
+        _received = Log.PacketsReceived;
+        _bytesSent = Log.BytesSent;
+        _bytesReceived = Log.BytesReceived;
+        _timeouts = Log.Timeouts;
+        _evicted = Log.Evicted;
+
+        _entries.Clear();
+        foreach (var entry in Log.Snapshot(Rows))
+            _entries.Add(Describe(entry));
+    }
+
+    private static Row Describe(TraceEntry entry)
+    {
+        if (entry.Direction is not PacketDirection direction || entry.Payload is null)
+            return new Row(entry, entry.Message ?? entry.Kind.ToString(), null, "", "", entry.Kind == TraceKind.Timeout);
+
+        var result = ProtocolOracle.Classify(entry.Payload, direction);
+
+        // Named fields are the point of classifying at all: "IdentityResponse" is a label, but
+        // "firmware_version=42" is the answer somebody came here for.
+        var detail = result.Fields.Count > 0
+            ? string.Join("  ", result.Fields.Select(f => $"{f.Name}={f.Value}"))
+            : null;
+
+        if (!result.StructuralOk && result.StructuralFailures.Count > 0)
+            detail = string.Join("; ", result.StructuralFailures);
+
+        return new Row(entry, result.MessageName, detail, Hex(entry.Payload), FullHex(entry.Payload), !result.StructuralOk);
+    }
+
+    // Packets are a fixed 64 bytes and almost entirely zero padding, so the tail carries no
+    // information and printing it would push the part that does off the row.
+    private static string Hex(byte[] payload, int max = 14)
+    {
+        int end = payload.Length;
+        while (end > 0 && payload[end - 1] == 0) end--;
+        if (end == 0) return "(all zero)";
+
+        var sb = new StringBuilder();
+        for (int i = 0; i < Math.Min(end, max); i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(payload[i].ToString("x2"));
+        }
+        if (end > max) sb.Append(" …");
+        return sb.ToString();
+    }
+
+    private static string FullHex(byte[] payload) => Convert.ToHexString(payload).ToLowerInvariant();
+
+    private static string Marker(TraceKind kind) => kind switch
+    {
+        TraceKind.Sent => "→",
+        TraceKind.Received => "←",
+        TraceKind.Timeout => "⏱",
+        _ => "•",
+    };
+
+    private static string DirectionClass(TraceKind kind) => kind switch
+    {
+        TraceKind.Sent => "sent",
+        TraceKind.Received => "received",
+        TraceKind.Timeout => "timeout",
+        _ => "note",
+    };
+
+    private static string CaptureHint(TraceCapture capture) => capture switch
+    {
+        TraceCapture.ConfigOnly => "The keyboard is polled for key travel hundreds of times a second; that traffic is left out so everything else stays readable.",
+        TraceCapture.Everything => "Including the travel polling, which will push everything else out within a second or two.",
+        _ => "Nothing new is recorded. The counters above keep running.",
+    };
+
+    private static string Bytes(long count) => count < 1024
+        ? $"{count} B"
+        : count < 1024 * 1024 ? $"{count / 1024.0:0.#} KB" : $"{count / (1024.0 * 1024.0):0.#} MB";
+
+    private void OnCaptureChanged(TraceCapture capture)
+    {
+        _capture = capture;
+        Log.Capture = capture;
+    }
+
+    private void Clear()
+    {
+        Log.Reset();
+        Refresh();
+    }
+
+    private async Task CopyTrace()
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"DrunkDeer trace — {Store.ModelName ?? "no keyboard"}, {(Store.IsDemo ? "demo (simulated)" : "WebHID")}");
+        text.AppendLine($"sent={_sent} received={_received} timeouts={_timeouts} poll={_pollRate:0}Hz");
+        text.AppendLine();
+
+        // Oldest first: a trace is read forwards, even though the screen shows newest first.
+        foreach (var row in Enumerable.Reverse(_entries))
+        {
+            text.Append($"{row.Entry.At.TotalSeconds,9:0.000}  {Marker(row.Entry.Kind)}  {row.Name}");
+            if (row.Detail is not null) text.Append($"  [{row.Detail}]");
+            if (row.FullHex.Length > 0) text.Append($"  {row.FullHex}");
+            text.AppendLine();
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text.ToString());
+            Snackbar.Add($"Copied {_entries.Count} trace entries.", Severity.Success);
+        }
+        catch (JSException)
+        {
+            Snackbar.Add("Couldn't reach the clipboard.", Severity.Warning);
+        }
+    }
+
+    private void OnStoreChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _running = false;
+        Store.Changed -= OnStoreChanged;
+    }
+}

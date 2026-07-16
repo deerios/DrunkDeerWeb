@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DrunkDeer.Web/src/DrunkDeer.Web.csproj" />
+  <Project Path="DrunkDeer.Web.Tests/DrunkDeer.Web.Tests.csproj" />
+</Solution>

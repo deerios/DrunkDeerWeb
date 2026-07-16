@@ -1,0 +1,183 @@
+@page "/dashboard"
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject SelectionStore Selection
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Dashboard</PageTitle>
+
+@if (!Store.IsConnected)
+{
+    <MudAlert Severity="Severity.Info">Not connected. <MudLink Href="">Connect a keyboard</MudLink> to see live travel.</MudAlert>
+}
+else
+{
+    <div class="d-flex align-center mb-4">
+        <MudSpacer />
+        @* Only the simulator can be driven from here. On real hardware the keyboard is the input,
+           so these would be buttons that quietly do nothing. *@
+        @if (Store.IsDemo)
+        {
+            <MudButton Class="mr-2" Variant="Variant.Outlined" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.TouchApp" OnClick="PressRandom">Simulate presses</MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.RestartAlt" OnClick="ReleaseAll">Release all</MudButton>
+        }
+    </div>
+
+    @* no-select on the tiles: they are a readout, and the room they sit in is part of the board's
+       selection surface — a drag that begins here rubber-bands the keys below, and a text selection
+       dragged out across the labels on the way is never what was meant. *@
+    <MudGrid Class="mb-4">
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-3 no-select" Elevation="1">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Model</MudText>
+                <MudText Typo="Typo.h6">@Store.ModelName</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-3 no-select" Elevation="1">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Firmware</MudText>
+                <MudText Typo="Typo.h6">v@(Store.FirmwareVersion)</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-3 no-select" Elevation="1">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Keys pressed</MudText>
+                <MudText Typo="Typo.h6">@_pressedCount</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-3 no-select" Elevation="1">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Selected</MudText>
+                <MudText Typo="Typo.h6">@Selection.Count</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <MudGrid>
+        @* board-column: a marquee started off the board overhangs it, and without this the panel
+           column paints over the overhang. See app.css. *@
+        <MudItem xs="12" md="8" lg="9" Class="board-column">
+            <MudPaper Class="pa-4" Elevation="1">
+                <div class="d-flex align-center mb-3">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">
+                        Click a key to select it, click and drag to select, shift to add,
+                        ctrl to toggle, Esc to clear. @(Store.IsDemo ? "Use “Simulate presses” to see the bars fill." : "")
+                    </MudText>
+                    <MudSpacer />
+                    <MudButton Class="mr-2" Variant="Variant.Text" Size="Size.Small"
+                               Disabled="@(_layoutKeys == 0)" OnClick="SelectAll">Select all</MudButton>
+                    <MudButton Variant="Variant.Text" Size="Size.Small"
+                               Disabled="@Selection.IsEmpty" OnClick="Selection.Clear">Clear</MudButton>
+                </div>
+                <KeyboardView />
+            </MudPaper>
+        </MudItem>
+        @* data-keeps-selection: clicking away from the board clears the selection (see keyboard.js),
+           and these panels are the one place where that would be wrong — they are what the selection
+           is *for*, so clearing on the way to an Apply button would apply it to nothing. *@
+        <MudItem xs="12" md="4" lg="3" data-keeps-selection="true">
+            @* Tabbed rather than stacked: both panels act on the same selection, and side by side
+               down one column they push each other off the screen. *@
+            @* no-select: these panels are controls and their prose is instructions for using them,
+               none of which is worth carrying off in a clipboard. The fields inside stay selectable
+               — see the rule in app.css. *@
+            <MudPaper Elevation="1" Class="no-select">
+                @* No icons on the tabs: this column is narrow at md, and icon+text overflows into
+                   scroll arrows that truncate the labels to a letter. *@
+                <MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true"
+                         PanelClass="pa-0" MinimumTabWidth="0px">
+                    <MudTabPanel Text="Actuation">
+                        <ActuationPanel />
+                    </MudTabPanel>
+                    <MudTabPanel Text="Lighting">
+                        <LightingPanel />
+                    </MudTabPanel>
+                    @* Profiles is a page of its own, not a fourth tab here: this column only fits
+                       three (a fourth collapses the strip into scroll arrows), and profiles are a
+                       whole-board thing that has nothing to do with the key selection these
+                       panels edit. *@
+                    <MudTabPanel Text="Device">
+                        <DevicePanel />
+                    </MudTabPanel>
+                </MudTabs>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    private int _pressedCount;
+    private int _layoutKeys;
+    private bool _running;
+    private readonly Random _rng = new();
+
+    protected override void OnInitialized()
+    {
+        if (!Store.IsConnected)
+        {
+            Nav.NavigateTo("");
+            return;
+        }
+        Store.Changed += OnStoreChanged;
+        Selection.Changed += OnSelectionChanged;
+        _layoutKeys = Keyboard.Session?.Layout.Count ?? 0;
+        _running = true;
+        _ = StatsLoop();
+    }
+
+    // The live travel animation is driven entirely by keyboard.js (rAF + CSS vars), so this
+    // loop only refreshes the coarse stat tiles a few times a second — never the board.
+    private async Task StatsLoop()
+    {
+        while (_running)
+        {
+            _pressedCount = CountPressed(Keyboard.SnapshotHeights());
+            StateHasChanged();
+            await Task.Delay(200);
+        }
+    }
+
+    private static int CountPressed(float[] heights)
+    {
+        int n = 0;
+        foreach (var h in heights)
+            if (h >= 1.0f) n++;
+        return n;
+    }
+
+    private void PressRandom()
+    {
+        var count = Keyboard.SnapshotHeights().Length;
+        if (count == 0) return;
+        for (int k = 0; k < 6; k++)
+            Keyboard.DemoPressKey(_rng.Next(count), 2.5f + (float)_rng.NextDouble() * 1.3f);
+    }
+
+    private void ReleaseAll() => Keyboard.DemoReleaseAll();
+
+    private void SelectAll()
+    {
+        var session = Keyboard.Session;
+        if (session is null) return;
+        Selection.SelectAll([.. session.Layout.Select(k => k.SlotIndex)]);
+    }
+
+    private void OnStoreChanged()
+    {
+        if (!Store.IsConnected) Nav.NavigateTo("");
+    }
+
+    // Only the "Selected" tile and the button states depend on this; the board's own
+    // highlighting is pushed straight to the DOM by the keyboard view.
+    private void OnSelectionChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _running = false;
+        Store.Changed -= OnStoreChanged;
+        Selection.Changed -= OnSelectionChanged;
+    }
+}

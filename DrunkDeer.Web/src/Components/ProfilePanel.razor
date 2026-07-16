@@ -1,0 +1,548 @@
+@using DrunkDeer.Protocol
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject ProfileLibrary Library
+@inject ActiveProfile Active
+@inject SettingsService Settings
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+@* Save the board's settings and put them back later (FUTURE_PLAN §5). Profiles are the SDK's own
+   KeyboardProfile JSON, so they interchange with the deerkb CLI. See KeyboardService.CaptureProfile
+   for why a save only contains what this session actually knows. *@
+
+@* no-select: the panel is a list of controls, and the saved names are reachable through Rename
+   rather than by dragging across them. The name field stays selectable — see app.css. *@
+<MudPaper Class="pa-4 no-select" Elevation="1">
+    <MudText Typo="Typo.h6" Class="mb-1">Profiles</MudText>
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        You can save the current profile (lighting, actuation distances, rapid trigger) here, and restore it at any time. Profiles are saved in the browser's local storage.
+    </MudText>
+
+    <MudDivider Class="my-3" />
+
+    @if (!Store.IsConnected)
+    {
+        <MudText Typo="Typo.subtitle2" Class="mb-2">Save current setup</MudText>
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+            Not connected. <MudLink Href="">Connect a keyboard</MudLink> to save what's on it - the
+            profiles below can still be exported, imported and deleted.
+        </MudAlert>
+    }
+    else
+    {
+        @* The profile the board is wearing, if it's wearing one — applying a profile, or saving the
+           board as one, is what puts it here. It's the fast way to keep an edit: without it, keeping
+           a change meant retyping the name below and confirming an overwrite. *@
+        @if (Active.Name is { } activeName)
+        {
+            @* Read once: answering it means capturing the whole board and comparing, and it's asked
+               three times in the markup below. *@
+            var edited = Active.HasUnsavedChanges;
+
+            <div class="d-flex align-center gap-2 mb-2">
+                <MudText Typo="Typo.subtitle2">Current profile</MudText>
+                <MudSpacer />
+                @if (edited)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning"
+                             Variant="Variant.Text" Class="ma-0">edited</MudChip>
+                }
+            </div>
+
+            <div class="d-flex align-center gap-1 mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.Bookmark" Size="Size.Small" Color="Color.Primary" />
+                <MudText Typo="Typo.body2" Class="profile-name">@activeName</MudText>
+            </div>
+
+            <MudButton FullWidth="true" Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.SaveAs"
+                       Disabled="@(_busy || !edited)" OnClick="UpdateActiveAsync">
+                @(edited ? $"Update '{activeName}'" : "No changes to save")
+            </MudButton>
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mt-1">
+                @(edited
+                    ? "Replaces it with everything on the board now - lighting, actuation and rapid trigger."
+                    : "The board matches this profile.")
+            </MudText>
+
+            <MudDivider Class="my-4" />
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Save as a new profile</MudText>
+        }
+        else
+        {
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Save current setup</MudText>
+        }
+
+        @* No "nothing to save" state: rapid trigger is always knowable, so a connected session can
+           always save something. What keeps that honest is the "Not saved" list below, which says
+           plainly what this session has no right to claim. *@
+        <MudTextField @bind-Value="_name" Label="Profile name" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" Disabled="@_busy"
+                      Error="@(_name.Length > 0 && NameProblem is not null)"
+                      ErrorText="@NameProblem" Class="mb-2" />
+
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mb-1">Will save:</MudText>
+        <ul class="summary mb-2">
+            @foreach (var line in Capturable)
+            {
+                <li>@line</li>
+            }
+        </ul>
+
+        @if (Omitted.Count > 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mb-1">Not saved:</MudText>
+            <ul class="summary omitted mb-2">
+                @foreach (var line in Omitted)
+                {
+                    <li>@line</li>
+                }
+            </ul>
+        }
+
+        <MudButton FullWidth="true" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Save"
+                   Disabled="@(_busy || NameProblem is not null)" OnClick="SaveAsync">
+            @(_busy ? "Saving…" : "Save profile")
+        </MudButton>
+    }
+
+    <MudDivider Class="my-4" />
+
+    <div class="d-flex align-center mb-2">
+        <MudText Typo="Typo.subtitle2">Saved profiles</MudText>
+        <MudSpacer />
+        @* Blazor's own InputFile behind a label, rather than MudFileUpload: the file input has to
+           stay a real <input type=file> for the browser to open its picker, and a label pointed at
+           it is the standard way to give it any appearance we like. *@
+        <label class="import @(_busy ? "disabled" : "")">
+            <MudIcon Icon="@Icons.Material.Filled.FileUpload" Size="Size.Small" />
+            <span>Import</span>
+            <InputFile OnChange="ImportAsync" accept=".json" disabled="@_busy" />
+        </label>
+    </div>
+
+    @if (_saved.Count == 0)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            No saved profiles yet. They're kept in this browser, and export to a file the
+            <code>deerkb</code> CLI can read.
+        </MudText>
+    }
+    else
+    {
+        <MudList T="string" Dense="true" Class="pa-0">
+            @foreach (var name in _saved)
+            {
+                <MudListItem T="string" Class="px-0">
+                    <div class="d-flex align-center gap-1">
+                        @* Marks the one the board is wearing, so the list and the section above
+                           agree about which profile "Update" would replace. *@
+                        @if (string.Equals(name, Active.Name, StringComparison.Ordinal))
+                        {
+                            <MudTooltip Text="The keyboard is using this profile">
+                                <MudIcon Icon="@Icons.Material.Filled.Bookmark" Size="Size.Small" Color="Color.Primary" />
+                            </MudTooltip>
+                        }
+                        <MudText Typo="Typo.body2" Class="profile-name">@name</MudText>
+                        <MudSpacer />
+                        <MudTooltip Text="Apply to keyboard">
+                            <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Small"
+                                           Color="Color.Primary" Disabled="@(_busy || !Store.IsConnected)"
+                                           OnClick="@(() => ApplyAsync(name))" />
+                        </MudTooltip>
+                        <MudTooltip Text="Rename">
+                            <MudIconButton Icon="@Icons.Material.Filled.DriveFileRenameOutline" Size="Size.Small"
+                                           Disabled="@_busy" OnClick="@(() => RenameAsync(name))" />
+                        </MudTooltip>
+                        <MudTooltip Text="Export as a file">
+                            <MudIconButton Icon="@Icons.Material.Filled.FileDownload" Size="Size.Small"
+                                           Disabled="@_busy" OnClick="@(() => ExportAsync(name))" />
+                        </MudTooltip>
+                        <MudTooltip Text="Delete">
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                           Disabled="@_busy" OnClick="@(() => DeleteAsync(name))" />
+                        </MudTooltip>
+                    </div>
+                </MudListItem>
+            }
+        </MudList>
+    }
+</MudPaper>
+
+@code {
+    private const long MaxImportBytes = 256 * 1024;
+
+    private string _name = "";
+    private bool _busy;
+    private IReadOnlyList<string> _saved = [];
+
+    private string? NameProblem => ProfileLibrary.DescribeNameProblem(_name);
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            _saved = await Library.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't read saved profiles: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // ── What a save would and wouldn't contain ───────────────────────────────
+
+    // Rapid trigger is always here because the board reports it in the identity handshake. The
+    // other two only appear once this session has written a whole board, which is the point at
+    // which its in-memory picture stops being the SDK's invented seed. Spelling out what's left
+    // behind is the honest half: a profile that silently dropped the lighting would look complete.
+
+    private List<string> Capturable
+    {
+        get
+        {
+            var lines = new List<string>();
+            if (!Store.IsConnected) return lines;
+
+            if (Keyboard.DepthsAreKnown) lines.Add(DescribeDepths(Keyboard.GetActuationProfile()));
+            if (Keyboard.ColorsAreKnown) lines.Add($"Lighting, at brightness {Keyboard.LastBrightness}");
+            lines.Add($"Rapid trigger: {(Keyboard.RapidTriggerEnabled ? "on" : "off")}");
+            return lines;
+        }
+    }
+
+    private List<string> Omitted
+    {
+        get
+        {
+            var lines = new List<string>();
+            if (!Store.IsConnected) return lines;
+
+            if (!Keyboard.DepthsAreKnown)
+                lines.Add("Actuation - this board can't report its depths back, and this session hasn't set them.");
+            if (!Keyboard.ColorsAreKnown)
+                lines.Add("Lighting - this board can't report its colours back, and this session hasn't set them.");
+            return lines;
+        }
+    }
+
+    // Deliberately no key count: the profile covers every key the firmware maps, which is a couple
+    // more than the board actually has caps for, and "84 keys" against the 82 on screen is a number
+    // nobody can reconcile.
+    private static string DescribeDepths(IReadOnlyDictionary<DDKey, float> depths)
+    {
+        var distinct = depths.Values.Distinct().Count();
+        return distinct <= 1
+            ? $"Actuation, every key at {depths.Values.FirstOrDefault():0.##} mm"
+            : $"Actuation, {distinct} different depths";
+    }
+
+    // ── Actions ──────────────────────────────────────────────────────────────
+
+    /// <summary>Saves the board back over the profile it came from.</summary>
+    /// <remarks>
+    /// No confirmation, unlike saving over a profile by name below. The button names the profile it
+    /// replaces and is only enabled when there is a change to save, so there is nothing left for a
+    /// dialog to tell the user that the button they just read didn't — and this exists to be the
+    /// quick way to keep an edit.
+    /// </remarks>
+    private async Task UpdateActiveAsync()
+    {
+        if (Active.Name is not { } name) return;
+
+        _busy = true;
+        try
+        {
+            await Library.SaveAsync(name, Keyboard.CaptureProfile());
+            // Re-read, so the profile stops counting as edited: the board is now what's saved.
+            Active.Set(name);
+            Snackbar.Add($"Updated '{name}'.", Severity.Success);
+            // The profile may have been deleted from another tab, in which case saving it back has
+            // just recreated it and the list is out of date.
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't update '{name}': {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (NameProblem is not null) return;
+
+        _busy = true;
+        try
+        {
+            var profile = Keyboard.CaptureProfile();
+            bool replacing = _saved.Contains(_name, StringComparer.OrdinalIgnoreCase);
+            if (replacing && !await ConfirmAsync(
+                    "Replace this profile?",
+                    $"'{_name}' already exists. Saving overwrites it.", "Replace"))
+                return;
+
+            await Library.SaveAsync(_name, profile);
+            // Saving the board as a profile means the board is now wearing it, so this is where you
+            // save further changes back to. Without this, the first thing you'd have to do after
+            // saving a profile is apply it.
+            Active.Set(_name);
+            Snackbar.Add($"Saved '{_name}'.", Severity.Success);
+            _name = "";
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't save: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ApplyAsync(string name)
+    {
+        _busy = true;
+        try
+        {
+            var profile = await Library.LoadAsync(name);
+            if (profile is null)
+            {
+                Snackbar.Add($"'{name}' is gone.", Severity.Warning);
+                await RefreshAsync();
+                return;
+            }
+
+            if (!await ConfirmApplyAsync(name, profile)) return;
+
+            await Keyboard.ApplyProfileAsync(profile);
+            // The board is wearing this now, so edits from here on have somewhere to go back to.
+            Active.Set(name);
+            Snackbar.Add($"Applied '{name}'.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't apply '{name}': {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Applying always writes the whole board, so it gets the same up-front account of what lands
+    // that the first actuation and lighting writes give.
+    private async Task<bool> ConfirmApplyAsync(string name, KeyboardProfile profile)
+    {
+        if (Settings.Current.SkipWriteConfirmations) return true;
+
+        var body = new System.Text.StringBuilder();
+        body.Append($"Writes to <b>{Store.ModelName}</b>:<ul>");
+        foreach (var line in DescribeProfile(profile))
+            body.Append($"<li>{line}</li>");
+        body.Append("</ul>");
+        body.Append(Store.IsDemo
+            ? "This is a simulated keyboard, so no hardware is touched."
+            : "Anything not listed is left alone. Settings this profile does cover are overwritten.");
+
+        return await ConfirmAsync($"Apply '{name}'?", body.ToString(), "Apply");
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string body, string yes) =>
+        await Dialogs.ShowMessageBoxAsync(
+            title: title,
+            markupMessage: new MarkupString(body),
+            yesText: yes, cancelText: "Cancel") == true;
+
+    private static List<string> DescribeProfile(KeyboardProfile p)
+    {
+        var lines = new List<string>();
+
+        if (p.Actuation is { } a) lines.Add(DescribeDepthProfile("Actuation", a));
+        if (p.Downstroke is { } d) lines.Add(DescribeDepthProfile("Rapid trigger downstroke", d));
+        if (p.Upstroke is { } u) lines.Add(DescribeDepthProfile("Rapid trigger upstroke", u));
+
+        if (p.Theme is { } t)
+        {
+            int overrides = t.Keys?.Count ?? 0;
+            var swatch = $"#{t.BaseColor.R:x2}{t.BaseColor.G:x2}{t.BaseColor.B:x2}";
+            lines.Add(overrides == 0
+                ? $"Lighting: the whole board {swatch}, brightness {t.Brightness}"
+                : $"Lighting: {swatch} background, brightness {t.Brightness}, plus {overrides} {Noun(overrides)} coloured individually");
+        }
+
+        if (p.RapidTrigger is { } rt) lines.Add($"Rapid trigger: {(rt ? "on" : "off")}");
+        if (p.RapidTriggerAutoMatch is { } am) lines.Add($"Rapid trigger auto-match: {(am ? "on" : "off")}");
+        if (p.TurboMode is { } tm) lines.Add($"Turbo mode: {(tm ? "on" : "off")}");
+
+        if (lines.Count == 0) lines.Add("Nothing — this profile is empty.");
+        return lines;
+    }
+
+    private static string DescribeDepthProfile(string label, KeyDepthProfile p)
+    {
+        int overrides = p.Keys?.Count ?? 0;
+        // A zero default is the SDK's "leave the keys I didn't list alone", not a depth of 0 mm.
+        var rest = p.Default == 0f ? "every other key unchanged" : $"every other key to {p.Default:0.##} mm";
+        return overrides == 0
+            ? $"{label}: {(p.Default == 0f ? "nothing" : $"every key to {p.Default:0.##} mm")}"
+            : $"{label}: {overrides} {Noun(overrides)} individually, {rest}";
+    }
+
+    private async Task ExportAsync(string name)
+    {
+        _busy = true;
+        try
+        {
+            var profile = await Library.LoadAsync(name);
+            if (profile is null)
+            {
+                Snackbar.Add($"'{name}' is gone.", Severity.Warning);
+                await RefreshAsync();
+                return;
+            }
+            await Library.ExportAsync(name, profile);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't export '{name}': {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RenameAsync(string name)
+    {
+        var parameters = new DialogParameters<RenameProfileDialog>();
+        parameters.Add(x => x.Name, name);
+        // The dialog says up front when a rename would replace something, which it can only do if
+        // it knows what's already here.
+        parameters.Add(x => x.Taken, _saved);
+
+        var dialog = await Dialogs.ShowAsync<RenameProfileDialog>("Rename profile", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not string renamed) return;
+
+        _busy = true;
+        try
+        {
+            if (await Library.RenameAsync(name, renamed))
+            {
+                // So a rename of the profile in use doesn't leave the panel offering to update a
+                // name that no longer exists.
+                Active.Renamed(name, renamed);
+                Snackbar.Add($"Renamed '{name}' to '{renamed}'.", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"'{name}' is gone.", Severity.Warning);
+            }
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't rename '{name}': {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(string name)
+    {
+        if (!await ConfirmAsync("Delete this profile?",
+                $"'{name}' is removed from this browser. Any file you exported is unaffected.", "Delete"))
+            return;
+
+        _busy = true;
+        try
+        {
+            await Library.DeleteAsync(name);
+            // The board keeps the settings; what's gone is the place to save them back to.
+            Active.Forget(name);
+            Snackbar.Add($"Deleted '{name}'.", Severity.Success);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't delete '{name}': {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.FileCount > 0 ? e.File : null;
+        if (file is null) return;
+
+        _busy = true;
+        try
+        {
+            using var reader = new StreamReader(file.OpenReadStream(MaxImportBytes));
+            var profile = ProfileLibrary.Import(await reader.ReadToEndAsync());
+
+            var name = NameFromFile(file.Name, _saved);
+            await Library.SaveAsync(name, profile);
+            Snackbar.Add($"Imported as '{name}'.", Severity.Success);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't import: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// A valid, unused profile name based on the file the user picked. Filenames are far freer than
+    /// profile names, so anything the name rule rejects becomes '-'.
+    /// </summary>
+    private static string NameFromFile(string fileName, IReadOnlyList<string> taken)
+    {
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var cleaned = new string([.. stem.Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '-')]);
+        if (cleaned.Length > 64) cleaned = cleaned[..64];
+        if (!ProfileLibrary.IsValidName(cleaned)) cleaned = "imported";
+
+        var candidate = cleaned;
+        for (int n = 2; taken.Contains(candidate, StringComparer.OrdinalIgnoreCase); n++)
+        {
+            var suffix = $"-{n}";
+            var stemPart = cleaned.Length + suffix.Length > 64 ? cleaned[..(64 - suffix.Length)] : cleaned;
+            candidate = stemPart + suffix;
+        }
+        return candidate;
+    }
+
+    private static string Noun(int n) => n == 1 ? "key" : "keys";
+
+    /// <summary>Turns an enum name like <c>WaveSpectrum</c> into "wave spectrum".</summary>
+    private static string Humanize(LightingMode mode)
+    {
+        var name = mode.ToString();
+        var sb = new System.Text.StringBuilder(name.Length + 4);
+        for (int i = 0; i < name.Length; i++)
+        {
+            if (i > 0 && char.IsUpper(name[i])) sb.Append(' ').Append(char.ToLowerInvariant(name[i]));
+            else sb.Append(char.ToLowerInvariant(name[i]));
+        }
+        return sb.ToString();
+    }
+}

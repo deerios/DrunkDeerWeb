@@ -1,0 +1,263 @@
+/* On-screen keyboard styling. --u (px per KLE unit) is set on .board by keyboard.js;
+   everything else is derived from it so the board scales with its container. Only the
+   per-key custom properties vary at runtime — --depth / --glow every frame, and
+   --kc / --lc / --lit after a lighting write, all patched by JS. Layout is static.
+   Animate transform/opacity only. */
+
+.board {
+    position: relative;
+    width: 100%;
+    margin: 0 auto;
+    /* --cols/--rows set inline; --u/height set by JS after measuring width. */
+    contain: layout;
+
+    /* Actuation marker colours, kept here rather than in the pushed data so JS names a state
+       and CSS decides how it looks. "unknown" is faint on purpose: until this session has
+       written a profile the marker sits at an assumed default, not at anything the board
+       reported. "preview" borrows the selection colour — a preview only ever shows on
+       selected keys, and it is not on the hardware yet. */
+    --act-unknown: rgba(255, 255, 255, 0.18);
+    --act-set: rgba(255, 255, 255, 0.65);
+    --act-preview: var(--mud-palette-info, #4aa8ff);
+    /* A marquee drag would otherwise also drag out a native text selection across the
+       legends, and touch-drag would scroll the page instead of selecting. */
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
+/* A still picture of a theme (the gallery thumbnails) has no gestures to protect: touch-action:none
+   above exists to stop a marquee drag scrolling the page, and leaving it on a board that cannot be
+   marquee'd would trap the scroll of any page that shows one. */
+.board.static {
+    touch-action: auto;
+}
+
+.key {
+    position: absolute;
+    left: calc(var(--kx) * var(--u));
+    top: calc(var(--ky) * var(--u));
+    width: calc(var(--kw) * var(--u));
+    height: calc(var(--kh) * var(--u));
+    --depth: 0;
+    --glow: 0;
+    --lit: 0;
+    --act: 0;
+    --actc: var(--act-unknown);
+    /* No containment, and that is load-bearing rather than an oversight. `paint` would clip the
+       backlight to the key's own box, killing the bleed into the gaps. `layout` would still make
+       each key a stacking context, which scopes the .glow/.cap z-index below *per key* — a key's
+       backlight would then paint over the caps of the keys before it in DOM order, haloing their
+       top faces. With no stacking context here, every .glow resolves against .board instead, so
+       all of them paint under every .cap. Measured: containment bought no frame time anyway. */
+}
+
+/* The backlight under the cap. The cap itself is opaque, so what reads as colour is this
+   leaking out around its edges into the gaps between keys — which is where the light escapes
+   on the real board too. Two things feed it: --lit is the backlight this session has set on
+   the key (steady), --glow is live travel (transient), so a lit key reads as lit while resting
+   and still brightens under a press. */
+.glow {
+    position: absolute;
+    /* Past the key's own bounds so neighbouring keys' light pools together rather than
+       stopping dead on a grid line. */
+    inset: -8%;
+    border-radius: calc(var(--u) * 0.22);
+    background: var(--kc);
+    filter: blur(calc(var(--u) * 0.13));
+    opacity: calc(var(--lit) * 0.55 + var(--glow) * 0.45);
+    /* Below every cap on the board, not just this key's — see the note on .key. The caps are
+       opaque, so the light only ever shows in the gaps and through the legends. */
+    z-index: 0;
+    pointer-events: none;
+}
+
+/* The keycap face. Presses sink it slightly for physicality. It stays its own dark colour
+   whatever the backlight is: on a real board the cap is opaque plastic, and the light shows
+   through the legend and around the edges rather than flooding the whole face. */
+.cap {
+    position: absolute;
+    inset: 4%;
+    z-index: 1;
+    --face: #1d1d1d;
+    background: var(--face);
+    border: 1px solid #2f2f2f;
+    border-top-color: #3d3d3d;
+    border-radius: calc(var(--u) * 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04),
+                0 1px 2px rgba(0, 0, 0, 0.5);
+    transform: translateY(calc(var(--depth) * var(--u) * 0.08));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.legend {
+    /* The legend carries the key's colour, because it is the part of the cap the backlight
+       actually shines through. Not --kc though: the backlight is free to be near-black (a
+       dimmed background), which would make the legend vanish against the cap, so the component
+       picks a readable stand-in when the colour is too dark to read. */
+    color: var(--lc);
+    /* Bloom around the characters, scaled by the backlight — the radius collapses to zero on an
+       unlit key, which is how this stays a single declaration instead of a state. */
+    text-shadow: 0 0 calc(var(--u) * var(--lit) * 0.09) var(--kc);
+    font-size: calc(var(--u) * 0.24);
+    line-height: 1.05;
+    padding: calc(var(--u) * 0.1);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    /* Legends wrap to more than one line (e.g. shifted symbols), so centring the flex item is
+       only half of it — the lines have to centre against each other too. */
+    white-space: pre-line;
+    text-align: center;
+    opacity: 0.92;
+    pointer-events: none;
+}
+
+/* Rapid trigger marker, tucked into the cap's bottom-left corner. Shown for every key at once,
+   because the firmware's rapid trigger is a single board-wide flag rather than a per-key setting
+   — the per-key trigger config lives behind the extended gateway, which the A75 does not expose.
+   Hidden rather than not rendered so that flipping the switch never re-renders the keys. */
+.rt-badge {
+    position: absolute;
+    left: calc(var(--u) * 0.07);
+    bottom: calc(var(--u) * 0.04);
+    font-size: calc(var(--u) * 0.13);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    color: var(--mud-palette-primary, #fb2c36);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.board.rt .rt-badge {
+    opacity: 0.85;
+}
+
+/* Vertical travel track pinned to the cap's right edge. */
+.depth-bar {
+    position: absolute;
+    right: calc(var(--u) * 0.06);
+    top: calc(var(--u) * 0.1);
+    bottom: calc(var(--u) * 0.1);
+    width: calc(var(--u) * 0.07);
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+    transition: background-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.depth-fill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: calc(var(--depth) * 100%);
+    background: #666666;
+    border-radius: 2px;
+    /* The lit state below is a step, not a ramp — the firmware registers the press at one point,
+       so the bar should snap there rather than fade up to it. This only smooths the way back down
+       to grey on release, where a hard cut reads as a glitch. Colour-only, and only on release,
+       so the pressed frames stay as cheap as before. */
+    transition: background-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+/* Actuation marker: a hairline across the track at the key's actuation point. Both its
+   position (--act) and its colour (--actc, i.e. how much the position is to be trusted) are
+   per key and pushed by keyboard.js — see setActuation. */
+.depth-bar::after {
+    content: "";
+    position: absolute;
+    left: -30%;
+    right: -30%;
+    bottom: calc(var(--act) * 100%);
+    height: 1px;
+    background: var(--actc);
+}
+
+/* Past the actuation point: the fill lights up, the cap face brightens, the glow firms up.
+   The fill is the loud one on purpose — it is the only part of the key that says *when* the press
+   registered rather than how far it has gone, so crossing the marker has to be a different event
+   to the eye than the travel that led up to it. Hence a hot near-white core over the accent rather
+   than the accent alone: against the grey it is a change of brightness, not just of hue, which is
+   what survives peripheral vision while the user is looking at something else on the board. */
+.key.pressed .depth-fill {
+    background: color-mix(in srgb, var(--mud-palette-primary, #fb2c36) 55%, #ffffff);
+    /* Clipped by the track's overflow to the empty track above the fill, which is exactly where it
+       is wanted: the fill's leading edge blooms up the track it has yet to cover. */
+    box-shadow: 0 0 calc(var(--u) * 0.06) rgba(255, 255, 255, 0.9);
+    /* No transition on the way in: the firmware registers the press at a point, so the bar snaps
+       at that point. The base rule's transition still catches the way back out. */
+    transition: none;
+}
+
+/* The bloom around the whole track. On .depth-bar rather than .depth-fill because the fill sits
+   inside the track's overflow:hidden, and a glow that stops at the track edge is not a glow.
+   The radius is held under the 0.06u of cap between the track and the cap's right edge — .cap
+   clips too, and a bloom wider than that gap would end in a hard vertical cut down the cap. */
+.key.pressed .depth-bar {
+    background: rgba(255, 255, 255, 0.14);
+    box-shadow: 0 0 calc(var(--u) * 0.05)
+                color-mix(in srgb, var(--mud-palette-primary, #fb2c36) 70%, transparent);
+}
+
+.key.pressed .cap {
+    border-color: var(--mud-palette-primary, #fb2c36);
+    --face: #262626;
+}
+
+/* Selection. Distinct from .pressed on purpose: pressed is live travel (transient, driven by
+   the board), selected is intent (sticky, driven by the user), so they must read differently
+   and legibly when a key is both. Selection uses a ring + lift; pressing still owns the fill. */
+.key.selected .cap {
+    border-color: var(--mud-palette-info, #4aa8ff);
+    box-shadow: 0 0 0 calc(var(--u) * 0.03) var(--mud-palette-info, #4aa8ff),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --face: #242424;
+}
+
+.key.selected .legend {
+    opacity: 1;
+}
+
+/* A selected key that is also pressed keeps the accent fill and gains the ring. */
+.key.selected.pressed .cap {
+    --face: #2b2b2b;
+}
+
+.key:focus-visible {
+    outline: none;
+}
+
+.key:focus-visible .cap {
+    border-color: #fff;
+    box-shadow: 0 0 0 calc(var(--u) * 0.03) rgba(255, 255, 255, 0.75);
+}
+
+/* Marquee. Positioned in px by JS against the board origin. */
+.marquee {
+    position: absolute;
+    z-index: 3;
+    border: 1px solid var(--mud-palette-info, #4aa8ff);
+    background: rgba(74, 168, 255, 0.12);
+    border-radius: 2px;
+    pointer-events: none;
+}
+
+/* Second face for non-rectangular caps (e.g. ISO Enter). */
+.cap2 {
+    inset: auto;
+    left: calc(var(--sx) * var(--u) + 4%);
+    top: calc(var(--sy) * var(--u) + 4%);
+    width: calc(var(--sw) * var(--u) - 8%);
+    height: calc(var(--sh) * var(--u) - 8%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .glow { transition: none; }
+    .cap { transform: none; }
+    /* The bar still lights up — that is information, not decoration. It just stops fading back. */
+    .depth-bar, .depth-fill { transition: none; }
+}

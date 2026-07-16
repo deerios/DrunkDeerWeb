@@ -1,0 +1,421 @@
+@using System.Globalization
+@using DrunkDeer.Protocol
+@using DrunkDeer.Web.Theming
+@inject KeyboardService Keyboard
+@inject SelectionStore Selection
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@* The on-screen keyboard (FUTURE_PLAN §5.4). Structure renders once from session.Layout;
+   the per-frame travel animation lives entirely in keyboard.js patching CSS variables,
+   so Blazor never re-renders the keys at poll rate.
+
+   The keys' class attribute is deliberately left to JS after the first render: the rAF loop
+   toggles .pressed there, and re-rendering the attribute from Blazor would wipe it. Selection
+   travels out to JS through setSelection instead of via the render tree, for the same reason.
+
+   Passing a Theme turns all of that off and makes the board a still picture of that theme — how
+   the gallery draws its thumbnails. See the Theme parameter. *@
+
+@if (_layout.Count == 0)
+{
+    <MudAlert Severity="Severity.Warning" Dense="true">
+        No on-screen layout is available for this model yet.
+    </MudAlert>
+}
+else
+{
+    @* Rapid trigger rides a class rather than a custom property on the style attribute: keyboard.js
+       owns --u and the board's height there, and re-rendering style would wipe both. It is board-wide
+       state, so one class here badges every key — see _rapidTrigger. *@
+    <div class="board @(_rapidTrigger ? "rt" : "") @(IsStatic ? "static" : "")" @ref="_board"
+         style="--cols:@F(_cols); --rows:@F(_rows)">
+        @* Rendered here rather than created in JS so that scoped CSS actually reaches it —
+           isolation only rewrites selectors for elements Blazor itself stamps. *@
+        @if (!IsStatic)
+        {
+            <div class="marquee" hidden></div>
+        }
+        @foreach (var k in _layout)
+        {
+            var p = Paint(k);
+            var a = Act(k);
+            @* A static board is a picture, not a control: no tab stop, no aria-pressed, and no
+               name read out per key. A gallery of them would otherwise put a few hundred phantom
+               buttons in the tab order, none of which do anything. The card names the theme. *@
+            <div class="key @(k.Secondary is not null ? "key-l" : "")"
+                 data-slot="@k.SlotIndex"
+                 role="@(IsStatic ? null : "button")" tabindex="@(IsStatic ? null : "0")"
+                 aria-pressed="@(IsStatic ? null : "false")" aria-label="@(IsStatic ? null : k.Legend)"
+                 style="--kx:@F(k.X); --ky:@F(k.Y); --kw:@F(k.W); --kh:@F(k.H); --kc:@p.Kc; --lc:@p.Lc; --lit:@p.Lit; --act:@a.Act; --actc:var(--act-@a.State)">
+                <div class="glow"></div>
+                <div class="cap">
+                    <span class="legend">@k.Legend</span>
+                    @* Always rendered, shown by .board.rt: the flag is board-wide, so this never
+                       needs to differ per key and must not re-render when it flips. *@
+                    <span class="rt-badge" aria-hidden="true">RT</span>
+                    @* A still picture has no travel to track and no actuation point to mark, and a
+                       gallery page renders this per key per thumbnail — so it is left out rather
+                       than hidden in CSS. *@
+                    @if (!IsStatic)
+                    {
+                        <div class="depth-bar"><div class="depth-fill"></div></div>
+                    }
+                </div>
+                @if (k.Secondary is { } s)
+                {
+                    @* Extra leg of a non-rectangular cap (e.g. ISO Enter) — a second face
+                       positioned relative to the key origin. *@
+                    <div class="cap cap2"
+                         style="--sx:@F(s.X - k.X); --sy:@F(s.Y - k.Y); --sw:@F(s.W); --sh:@F(s.H)"></div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// A theme to draw instead of the live keyboard. Non-null makes this board a still picture of
+    /// that theme: no travel, no selection, no actuation markers, no keyboard needed.
+    /// </summary>
+    /// <remarks>
+    /// This is what lets the gallery reuse the board rather than grow a second, lesser one that
+    /// would drift from it. The theme only decides the colours — the shape of the board still comes
+    /// from the connected keyboard when there is one, so a thumbnail shows the theme on <em>your</em>
+    /// board, and falls back to the A75 when there's nothing plugged in to ask.
+    /// </remarks>
+    [Parameter] public KeyboardTheme? Theme { get; set; }
+
+    /// <summary>Whether this board is a picture of a <see cref="Theme"/> rather than a live keyboard.</summary>
+    private bool IsStatic => Theme is not null;
+
+    // The board a theme is drawn on when no keyboard is connected to ask. The A75 is the model
+    // this SDK is actually verified against, so it is the honest stand-in.
+    private const string FallbackModel = ModelSlugs.A75;
+    private const string FallbackVariant = "ansi";
+
+    // The legend colour used when there is no backlight to represent.
+    private const string Neutral = "#cfcfd4";
+
+    // How light a legend has to be to read on the #1c1d22 cap. See Readable.
+    private const float MinLegendLightness = 0.62f;
+
+    private ElementReference _board;
+    private IReadOnlyList<KeyInfo> _layout = [];
+    private float _cols, _rows, _maxDepth = 4f;
+
+    // Board-wide, not per key: the firmware carries one rapid trigger flag for the whole keyboard
+    // (KeyboardSession.EnableRapidTrigger). The per-key rapid trigger config the protocol defines
+    // lives in the KeyTrigger region behind the extended gateway, which the A75 hasn't got, so
+    // there is no per-key state to draw here even if the board looks like it should have one.
+    private bool _rapidTrigger;
+
+    // Cached because Act() runs per key and the session rebuilds this dictionary on every call.
+    private IReadOnlyDictionary<DDKey, float> _actuation = new Dictionary<DDKey, float>();
+
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<KeyboardView>? _selfRef;
+
+    // Built once per Theme rather than per key: expanding a theme walks its whole override map,
+    // and Paint() runs for every key on the board.
+    private ThemePalette? _palette;
+
+    protected override void OnInitialized()
+    {
+        if (IsStatic)
+        {
+            InitStatic();
+            return;
+        }
+
+        Selection.Changed += OnSelectionChanged;
+        Keyboard.LightingChanged += OnLightingChanged;
+        Keyboard.ActuationChanged += OnActuationChanged;
+        Keyboard.RapidTriggerChanged += OnRapidTriggerChanged;
+
+        var session = Keyboard.Session;
+        if (session is null) return;
+        // The board reports this in the identity handshake, so unlike the depths and colours it is
+        // real state from the start and needs no "known yet?" gate.
+        _rapidTrigger = Keyboard.RapidTriggerEnabled;
+        _layout = session.Layout;
+        _cols = session.BoardWidth;
+        _rows = session.BoardHeight;
+        if (session.MaxDepthMm > 0) _maxDepth = session.MaxDepthMm;
+        _actuation = Keyboard.GetActuationProfile();
+    }
+
+    // A picture of a theme subscribes to nothing: none of the live state it would be listening for
+    // has any bearing on what it draws, and a gallery of thumbnails would otherwise put a dozen
+    // handlers on every lighting write the user makes elsewhere.
+    private void InitStatic()
+    {
+        var session = Keyboard.Session;
+        if (session is not null && session.HasLayout)
+        {
+            _layout = session.Layout;
+            _cols = session.BoardWidth;
+            _rows = session.BoardHeight;
+            return;
+        }
+
+        if (!KeyGeometry.TryGetKeys(FallbackModel, FallbackVariant, out var keys)) return;
+        _layout = keys;
+        // The session computes these from its layout the same way; there's no session here to
+        // borrow them from, and they're what the board's aspect ratio is built out of.
+        _cols = keys.Max(k => k.X + k.W);
+        _rows = keys.Max(k => k.Y + k.H);
+    }
+
+    // The gallery keeps one card mounted and swaps the theme through it while previewing, so the
+    // palette has to follow the parameter rather than being built once and forgotten.
+    protected override void OnParametersSet()
+    {
+        if (IsStatic) _palette = new ThemePalette(Theme!);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _layout.Count == 0) return;
+
+        // Even a still picture attaches: keyboard.js is what measures the container and sets --u,
+        // and without it every key would render at zero size. It just gets no .NET reference, which
+        // is what tells it there is nothing to poll or select here.
+        if (IsStatic)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/keyboard.js");
+            await _module.InvokeVoidAsync("attach", _board, null, _maxDepth, 1f);
+            return;
+        }
+
+        var session = Keyboard.Session;
+        if (session is null) return;
+
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/keyboard.js");
+        _selfRef = DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("attach", _board, _selfRef, _maxDepth, session.PressThresholdMm);
+
+        // The selection can outlive a navigation away and back, so paint whatever is already
+        // in the store rather than assuming a fresh board is unselected.
+        if (!Selection.IsEmpty) await PushSelectionAsync();
+    }
+
+    // Called synchronously by the rAF loop each frame. Reads the live travel snapshot off
+    // the session without going through Blazor — the deliberate hot-path bypass.
+    [JSInvokable]
+    public float[] SampleHeights() => Keyboard.SnapshotHeights();
+
+    /// <summary>Reports a pointer/keyboard gesture from the board; the store decides what it means.</summary>
+    /// <remarks>
+    /// The mode crosses as a string: Blazor's interop serializer has no string-enum converter,
+    /// so an enum parameter would only bind to a bare number. Qualified because MudBlazor has a
+    /// <c>SelectionMode</c> of its own and both namespaces are imported globally.
+    /// </remarks>
+    [JSInvokable]
+    public void SelectSlots(int[] slots, string mode)
+    {
+        if (!Enum.TryParse<Services.SelectionMode>(mode, out var parsed))
+            parsed = Services.SelectionMode.Replace;
+        Selection.Apply(parsed, slots);
+    }
+
+    private void OnSelectionChanged() => _ = InvokeAsync(async () =>
+    {
+        await PushSelectionAsync();
+        // A preview only applies to the selected keys, so changing the selection moves it.
+        if (Keyboard.ActuationPreviewMm is not null) await PushActuationAsync();
+    });
+
+    private async Task PushSelectionAsync()
+    {
+        if (_module is null) return;
+        try
+        {
+            await _module.InvokeVoidAsync("setSelection", _board, Selection.Slots);
+        }
+        catch (JSDisconnectedException) { /* teardown raced the update */ }
+        catch (ObjectDisposedException) { /* same */ }
+    }
+
+    /// <summary>Where one key's actuation marker sits, and how much the board should trust it.</summary>
+    /// <remarks>
+    /// Three states, because the marker means three different things. A board that has been written
+    /// this session reports what it is set to ("set"). A key whose depth the user is dialling in
+    /// shows where it is heading ("preview"). Otherwise the position is the SDK's assumed default
+    /// rather than anything the board said — the A75 cannot report its settings back — so the marker
+    /// is drawn faintly ("unknown") instead of claiming to know.
+    /// </remarks>
+    private KeyAct Act(KeyInfo k)
+    {
+        // A still picture draws no marker, so this is only here to fill the style attribute.
+        if (IsStatic) return new(k.SlotIndex, "0", "unknown");
+
+        if (Keyboard.ActuationPreviewMm is { } preview && Selection.Contains(k.SlotIndex))
+            return new(k.SlotIndex, Frac(preview), "preview");
+
+        var mm = _actuation.TryGetValue(k.Key, out var v) ? v : 0f;
+        return new(k.SlotIndex, Frac(mm), Keyboard.DepthsAreKnown ? "set" : "unknown");
+    }
+
+    private string Frac(float mm) => F(Math.Clamp(mm / _maxDepth, 0f, 1f));
+
+    private void OnActuationChanged() => _ = InvokeAsync(async () =>
+    {
+        _actuation = Keyboard.GetActuationProfile();
+        await PushActuationAsync();
+    });
+
+    private async Task PushActuationAsync()
+    {
+        if (_module is null) return;
+        try
+        {
+            await _module.InvokeVoidAsync("setActuation", _board, _layout.Select(Act));
+        }
+        catch (JSDisconnectedException) { /* teardown raced the update */ }
+        catch (ObjectDisposedException) { /* same */ }
+    }
+
+    /// <summary>How one key should be painted: backlight colour, legend colour, and whether it is lit.</summary>
+    /// <remarks>
+    /// The backlight colour and the legend colour are not the same thing: the legend has to stay
+    /// readable on a dark cap at any brightness, so it carries the key's hue rather than its exact
+    /// colour. See <see cref="Readable"/>. The glow keeps the true colour, so brightness still
+    /// shows in the picture.
+    /// </remarks>
+    private KeyPaint Paint(KeyInfo k)
+    {
+        // A theme is a description of a board's colours, so unlike the live case there is no
+        // "we don't know yet" — the theme is the answer, whether or not anything is connected.
+        if (_palette is not null) return Lit(k.SlotIndex, _palette[k.Key]);
+
+        var session = Keyboard.Session;
+        if (session is null) return new(k.SlotIndex, "transparent", Neutral, 0);
+
+        // A running animation is generated on the board itself, and the backlight can be off
+        // outright; in neither case do this session's per-key colours describe what's displayed,
+        // so show the board unlit rather than inventing a picture of it.
+        if (Keyboard.ActiveMode is not null || Keyboard.BacklightOff)
+            return new(k.SlotIndex, "transparent", Neutral, 0);
+
+        return Lit(k.SlotIndex, session.GetKeyColor(k.Key));
+    }
+
+    /// <summary>One key painted in <paramref name="color"/>, or dark if that colour is black.</summary>
+    /// <remarks>
+    /// Black is the firmware's way of saying "this key is off" rather than a colour to draw, so it
+    /// has to read as an unlit key — a black glow behind a dark cap would look identical anyway,
+    /// but the legend would go with it and the key would vanish.
+    /// </remarks>
+    private static KeyPaint Lit(int slot, (byte R, byte G, byte B) color)
+    {
+        var (r, g, b) = color;
+        if (r == 0 && g == 0 && b == 0) return new(slot, "transparent", Neutral, 0);
+        return new(slot, $"rgb({r},{g},{b})", Readable(r, g, b), 1);
+    }
+
+    /// <summary>The key's colour, lifted to something legible on the dark cap without losing its hue.</summary>
+    /// <remarks>
+    /// The legend stands in for light coming through the cap, so it has to look like the colour the
+    /// user picked — but that colour is usually far too dark to read as text. Brightness scales
+    /// linearly, so a level-4 background is 44% of its nominal colour, and saturated blues are dim
+    /// even at full brightness. Judging "too dark" by luma and falling back to grey (as this used
+    /// to) throws the hue away exactly when the user is trying to choose one, and blue never passes
+    /// a luma test at any brightness. Raising the lightness and leaving hue and saturation alone
+    /// keeps the legend recognisably the chosen colour at every brightness.
+    /// </remarks>
+    private static string Readable(byte r, byte g, byte b)
+    {
+        float rf = r / 255f, gf = g / 255f, bf = b / 255f;
+        float max = Math.Max(rf, Math.Max(gf, bf));
+        float min = Math.Min(rf, Math.Min(gf, bf));
+        float l = (max + min) / 2f;
+        if (l >= MinLegendLightness) return $"rgb({r},{g},{b})";
+
+        float d = max - min;
+        if (d == 0) return HslToCss(0, 0, MinLegendLightness); // a grey; only its lightness matters
+
+        float s = d / (1 - Math.Abs(2 * l - 1));
+        float h;
+        if (max == rf) h = ((gf - bf) / d) % 6;
+        else if (max == gf) h = (bf - rf) / d + 2;
+        else h = (rf - gf) / d + 4;
+        h *= 60;
+        if (h < 0) h += 360;
+
+        return HslToCss(h, s, MinLegendLightness);
+    }
+
+    private static string HslToCss(float h, float s, float l)
+    {
+        float c = (1 - Math.Abs(2 * l - 1)) * s;
+        float x = c * (1 - Math.Abs(h / 60f % 2 - 1));
+        float m = l - c / 2;
+
+        // An if-chain rather than a switch expression on relational patterns: Razor parses a
+        // `< 60 =>` arm as the start of a markup tag and the file stops compiling.
+        float r, g, b;
+        int sector = (int)(h / 60f) % 6;
+        if (sector == 0) { r = c; g = x; b = 0; }
+        else if (sector == 1) { r = x; g = c; b = 0; }
+        else if (sector == 2) { r = 0; g = c; b = x; }
+        else if (sector == 3) { r = 0; g = x; b = c; }
+        else if (sector == 4) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+
+        static byte To(float v) => (byte)Math.Clamp(MathF.Round(v * 255), 0, 255);
+        return $"rgb({To(r + m)},{To(g + m)},{To(b + m)})";
+    }
+
+    // The only one of these that goes through the render tree: it flips a class on .board rather
+    // than a per-key custom property, and the keys' own class attributes don't change, so the diff
+    // leaves the .pressed/.selected classes JS owns untouched.
+    private void OnRapidTriggerChanged() => _ = InvokeAsync(() =>
+    {
+        _rapidTrigger = Keyboard.RapidTriggerEnabled;
+        StateHasChanged();
+    });
+
+    private void OnLightingChanged() => _ = InvokeAsync(PushColorsAsync);
+
+    private async Task PushColorsAsync()
+    {
+        if (_module is null) return;
+        try
+        {
+            await _module.InvokeVoidAsync("setColors", _board, _layout.Select(Paint));
+        }
+        catch (JSDisconnectedException) { /* teardown raced the update */ }
+        catch (ObjectDisposedException) { /* same */ }
+    }
+
+    /// <summary>One key's paint, as keyboard.js expects it.</summary>
+    private readonly record struct KeyPaint(int Slot, string Kc, string Lc, int Lit);
+
+    /// <summary>One key's actuation marker: its position as a fraction of full travel, and its state.</summary>
+    private readonly record struct KeyAct(int Slot, string Act, string State);
+
+    private static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!IsStatic)
+        {
+            Selection.Changed -= OnSelectionChanged;
+            Keyboard.LightingChanged -= OnLightingChanged;
+            Keyboard.ActuationChanged -= OnActuationChanged;
+            Keyboard.RapidTriggerChanged -= OnRapidTriggerChanged;
+        }
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.InvokeVoidAsync("detach", _board);
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { /* circuit gone; nothing to clean up */ }
+        }
+        _selfRef?.Dispose();
+    }
+}

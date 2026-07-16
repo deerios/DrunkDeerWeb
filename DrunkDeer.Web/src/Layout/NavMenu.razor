@@ -1,0 +1,26 @@
+@inject KeyboardStore Store
+@implements IDisposable
+
+<MudNavMenu>
+    <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.PowerSettingsNew">Connect</MudNavLink>
+    <MudNavLink Href="dashboard" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Dashboard" Disabled="@(!Store.IsConnected)">Dashboard</MudNavLink>
+    @* Reachable while disconnected: saved profiles can be exported, imported and tidied up with no
+       keyboard present. Only applying one needs hardware, and the panel gates that itself. *@
+    <MudNavLink Href="profiles" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Bookmarks">Profiles</MudNavLink>
+    @* Same again: browsing themes and copying one into your own profiles needs no keyboard, and
+       only the preview button does. *@
+    <MudNavLink Href="gallery" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Palette">Theme gallery</MudNavLink>
+    @* Never disabled, unlike the dashboard: the traffic from a keyboard that has just dropped is
+       worth reading precisely when there is no longer a keyboard. *@
+    <MudNavLink Href="diagnostics" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Terminal">Diagnostics</MudNavLink>
+    @* Preferences about the app, so no keyboard is needed to change them. *@
+    <MudNavLink Href="settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Settings">Settings</MudNavLink>
+</MudNavMenu>
+
+@code {
+    protected override void OnInitialized() => Store.Changed += OnStoreChanged;
+
+    private void OnStoreChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Store.Changed -= OnStoreChanged;
+}

@@ -1,0 +1,22 @@
+## .NET / C# build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.rsuser
+
+## NuGet
+packages/
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Rider / JetBrains
+.idea/
+*.sln.iml
+
+## OS
+Thumbs.db
+.DS_Store

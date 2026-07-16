@@ -1,0 +1,22 @@
+/* The facts table is a label/value list, not a data grid: kill the default cell padding and
+   let the labels sit in a narrow muted column so the values line up and read first. */
+.device-facts td {
+    padding: 0.25rem 0;
+    border: none;
+    vertical-align: top;
+}
+
+.device-facts td:first-child {
+    width: 40%;
+    color: var(--mud-palette-text-secondary);
+    font-size: 0.8125rem;
+}
+
+/* The icon is a fixed-size marker next to wrapping text: without this it is treated as a
+   flex item free to shrink, and the text wraps over the top of it.
+   ::deep is required — the element belongs to MudIcon, so it carries no scope attribute of
+   ours and a plain descendant selector would be rewritten into something that never matches. */
+.programmable ::deep .mud-icon-root {
+    flex: none;
+    margin-top: 0.125rem;
+}

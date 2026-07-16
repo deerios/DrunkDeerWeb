@@ -1,0 +1,136 @@
+@using DrunkDeer.Protocol
+@inject ProfileLibrary Profiles
+@inject ActiveProfile Active
+@inject IJSRuntime JS
+
+@* Replacing the lighting of a theme you already published.
+
+   The shape of PublishThemeDialog, and for the same reasons — see ThemePublisher for why the app
+   never talks to GitHub itself. The difference is what is being decided: the name and the credit
+   are already settled and this cannot change them, so the only question is which profile the theme
+   should look like now. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+            Replaces the lighting of <strong>@Theme.Name</strong> in the gallery. Its name and credit stay as they
+            are — to rename a theme, unpublish it and publish it again.
+        </MudText>
+
+        @if (_lighting is null)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (_lighting.Names.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                You have no saved profiles yet. Set your keyboard's lighting up how you like it, save it as a
+                profile on the <MudLink Href="profiles">Profiles</MudLink> page, and it can be sent from here.
+            </MudAlert>
+        }
+        else
+        {
+            <MudSelect T="string" Value="_selected" ValueChanged="Select" Label="New lighting, from the profile"
+                       Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-4">
+                @foreach (var profile in _lighting.Names)
+                {
+                    <MudSelectItem Value="@profile">@profile</MudSelectItem>
+                }
+            </MudSelect>
+
+            @if (_problem is not null)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-4">@_problem</MudAlert>
+            }
+            else if (_theme is not null)
+            {
+                @* Drawn by the same static board the gallery draws its cards with, so what you are
+                   about to send is shown by the code that will show it to everyone else. *@
+                <div class="publish-thumb mb-4">
+                    <KeyboardView Theme="@_theme" />
+                </div>
+
+                @if (!Fits)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mt-4">
+                        This theme is too big to carry in a link. Continuing will copy it to your clipboard and open
+                        the form — paste it into the <strong>Theme JSON</strong> box.
+                    </MudAlert>
+                }
+            }
+        }
+
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-4">
+            Only the GitHub account that published a theme can change it, so submit the issue from the account you
+            published <strong>@Theme.Name</strong> with.
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Close</MudButton>
+
+        @if (_theme is not null && Fits)
+        {
+            @* A real link, not a button that calls window.open: the browser opens it itself, so
+               there is no popup to block and no user gesture to spend getting there. *@
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Custom.Brands.GitHub"
+                       Href="@Url" Target="_blank" OnClick="Sent">Update on GitHub</MudButton>
+        }
+        else
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Custom.Brands.GitHub"
+                       Disabled="@(_theme is null)" OnClick="CopyAndOpenAsync">Update on GitHub</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+
+    /// <summary>The published theme being changed.</summary>
+    [Parameter, EditorRequired] public GalleryEntry Theme { get; set; } = default!;
+
+    private ProfileThemes? _lighting;
+    private string? _selected;
+    private KeyboardTheme? _theme;
+    private string? _problem;
+
+    // Built on every render rather than cached: it is a string concatenation, and a cached copy is
+    // one more thing to invalidate as the selection changes.
+    private string Url => _theme is null ? "" : ThemePublisher.BuildUpdateIssueUrl(Theme.Id, Theme.Name, _theme);
+
+    private bool Fits => _theme is null || ThemePublisher.Fits(Url);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _lighting = await ProfileThemes.LoadAsync(Profiles);
+        if (_lighting.Pick(Active.Name) is { } chosen) Select(chosen);
+    }
+
+    private void Select(string profile)
+    {
+        _selected = profile;
+        (_theme, _problem) = _lighting?[profile] ?? default;
+    }
+
+    // The link does the opening; this only closes the dialog behind it. Nothing has changed at this
+    // point — the user still has to submit the issue on GitHub.
+    private void Sent() => Dialog.Close(DialogResult.Ok(Theme.Name));
+
+    private async Task CopyAndOpenAsync()
+    {
+        if (_theme is null) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", ThemePublisher.ToJson(_theme));
+        }
+        catch (JSException)
+        {
+            // A browser that refuses the clipboard leaves the user with an empty form and no theme
+            // to paste, which is worse than not opening it at all.
+            _problem = "This browser wouldn't let the app copy the theme to your clipboard.";
+            return;
+        }
+        await JS.InvokeVoidAsync("open", ThemePublisher.BuildEmptyUpdateIssueUrl(Theme.Id, Theme.Name), "_blank", "noopener");
+        Dialog.Close(DialogResult.Ok(Theme.Name));
+    }
+}

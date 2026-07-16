@@ -1,0 +1,60 @@
+@* Asks for a profile's new name. A dialog of its own rather than a message box, because a message
+   box has nowhere to put a text field — every other confirmation in this app is a yes/no and can
+   use one. Closes with the new name, or cancelled. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_name" Label="New name" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" AutoFocus="true"
+                      OnKeyDown="OnKeyDown"
+                      Error="@(Problem is not null)" ErrorText="@Problem" />
+
+        @if (Replaces)
+        {
+            @* A warning rather than a refusal: overwriting is what Save already does with a name
+               that's taken, and the two would be hard to explain apart. *@
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                There's already a profile called “@_name”. Renaming replaces it.
+            </MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@(!CanSubmit)" OnClick="Submit">Rename</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+
+    /// <summary>The profile being renamed. The field starts here, since a rename is usually an edit.</summary>
+    [Parameter, EditorRequired] public string Name { get; set; } = "";
+
+    /// <summary>Every name already in use, so this can say up front that the rename would replace one.</summary>
+    [Parameter] public IReadOnlyList<string> Taken { get; set; } = [];
+
+    private string _name = "";
+
+    // The one rule, borrowed rather than restated: profile names are the CLI's file-name rule, and a
+    // second copy of it here is a second thing to keep in step.
+    private string? Problem => ProfileLibrary.DescribeNameProblem(_name);
+
+    private bool Unchanged => string.Equals(_name, Name, StringComparison.Ordinal);
+
+    private bool Replaces =>
+        !Unchanged && Problem is null && Taken.Contains(_name, StringComparer.OrdinalIgnoreCase);
+
+    private bool CanSubmit => Problem is null && !Unchanged;
+
+    protected override void OnInitialized() => _name = Name;
+
+    private void Submit() => Dialog.Close(DialogResult.Ok(_name));
+
+    // Enter submits: the dialog is one field and a verb, and reaching for the mouse to confirm what
+    // you just typed is the kind of thing that makes a rename feel heavier than it is.
+    private void OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or "NumpadEnter" && CanSubmit) Submit();
+    }
+}

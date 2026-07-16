@@ -1,0 +1,206 @@
+@page "/"
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject SettingsService Settings
+@inject SessionRestore Restore
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+
+<PageTitle>Connect to DrunkDeer keyboard</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Small" Class="mt-8">
+    <div class="d-flex flex-column align-center mb-8">
+        <MudIcon Icon="@Icons.Material.Filled.Keyboard" Size="Size.Large" Style="font-size:4rem;" Color="Color.Primary" />
+        <MudText Typo="Typo.h4" Class="mt-2">DrunkDeer Web</MudText>
+        <MudText Typo="Typo.body1" Color="Color.Secondary" Align="Align.Center">
+            Configure your analog keyboard from the browser - actuation, rapid trigger, and lighting.
+        </MudText>
+    </div>
+
+    @if (Store.IsConnected)
+    {
+        <MudPaper Class="pa-6 d-flex flex-column align-center" Elevation="2">
+            <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Size="Size.Large" />
+            <MudText Typo="Typo.h6" Class="mt-2">Connected to @Store.ModelName (@Store.Variant)</MudText>
+            @if (Store.IsDemo)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Info">@Store.StatusMessage</MudText>
+            }
+            <div class="d-flex gap-2 mt-4">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Dashboard"
+                           OnClick="@(() => Nav.NavigateTo("dashboard"))">Open dashboard</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Default"
+                           StartIcon="@Icons.Material.Filled.LinkOff"
+                           OnClick="Disconnect">Disconnect</MudButton>
+            </div>
+        </MudPaper>
+    }
+    else
+    {
+        <MudPaper Class="pa-6" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3">Connect a keyboard</MudText>
+
+            @* Why the last connection ended — unplugging the keyboard bounces you back here from
+               the dashboard, and without this it would look like the app simply forgot you. *@
+            @if (!string.IsNullOrEmpty(Store.StatusMessage) && Store.Status is ConnectionStatus.Disconnected or ConnectionStatus.Faulted)
+            {
+                <MudAlert Severity="@(Store.Status == ConnectionStatus.Faulted ? Severity.Error : Severity.Info)"
+                          Class="mb-4" Dense="true">
+                    @Store.StatusMessage
+                </MudAlert>
+            }
+
+            @if (_hidSupported == false)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-4" Dense="true">
+                    This browser can't access USB devices. WebHID needs a Chromium browser
+                    (Chrome, Edge, or Opera) served over HTTPS or localhost. You can still explore
+                    everything in demo mode.
+                </MudAlert>
+            }
+
+            <MudButton FullWidth="true" Size="Size.Large" Class="mb-3"
+                       Variant="Variant.Filled" Color="Color.Primary"
+                       Disabled="@(_hidSupported != true || _busy)"
+                       StartIcon="@Icons.Material.Filled.Usb"
+                       OnClick="ConnectHardware">
+                Connect keyboard
+            </MudButton>
+
+            <MudDivider Class="my-3" />
+
+            <MudButton FullWidth="true" Size="Size.Large"
+                       Variant="Variant.Outlined" Color="Color.Info"
+                       Disabled="@_busy"
+                       StartIcon="@Icons.Material.Filled.Science"
+                       OnClick="ConnectDemo">
+                Try demo mode (no hardware)
+            </MudButton>
+
+            @if (_hidSupported == true)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-3 d-block">
+                    Your browser will ask which keyboard to allow access to. Nothing you configure
+                    leaves your machine - this page talks to the keyboard directly.
+                </MudText>
+            }
+        </MudPaper>
+    }
+</MudContainer>
+
+@code {
+    private bool? _hidSupported;
+    private bool _busy;
+
+    // Asking the service (rather than importing the module here) is what leaves the interop
+    // module loaded and warm for the Connect button: Chrome only opens the device picker while
+    // the click still counts as a user gesture, and a cold module import would spend it.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _hidSupported = await Keyboard.IsWebHidSupportedAsync();
+        StateHasChanged();
+
+        await AutoConnectAsync();
+    }
+
+    /// <summary>
+    /// Opens the keyboard the browser already has permission for, if the user asked us to, and
+    /// carries on to the dashboard.
+    /// </summary>
+    /// <remarks>
+    /// Run from here rather than from the app's startup because this is the page you land on, and
+    /// the one you come back to when it doesn't work out. Nothing is reported when it finds no
+    /// keyboard: not finding one is what happens the first time, every time, for anyone who hasn't
+    /// granted permission — and the answer to it is this page, which is already on screen.
+    /// </remarks>
+    private async Task AutoConnectAsync()
+    {
+        // HasTriedReconnecting is per page load, not per render: disconnecting brings you back
+        // here, and reopening the board someone had just put down would make Disconnect look broken.
+        if (_hidSupported != true || !Settings.Current.AutoConnect
+            || Keyboard.HasTriedReconnecting || Store.IsConnected) return;
+
+        _busy = true;
+        StateHasChanged();
+        try
+        {
+            if (await Keyboard.ReconnectWebHidAsync())
+                await OpenDashboardAsync();
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ConnectDemo()
+    {
+        _busy = true;
+        try
+        {
+            await Keyboard.ConnectDemoAsync();
+            await OpenDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't start demo mode: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ConnectHardware()
+    {
+        _busy = true;
+        try
+        {
+            // False means the user closed the picker without choosing — they know they did that,
+            // so there's nothing to tell them.
+            if (await Keyboard.ConnectWebHidAsync())
+                await OpenDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Connection failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Does whatever the startup setting asks of a newly connected board, then shows it.
+    /// </summary>
+    /// <remarks>
+    /// Every way in goes through here — the picker, demo mode, and reconnecting — because "when the
+    /// keyboard connects, put this on it" is what the setting says, and a board that got its profile
+    /// only when the app happened to open itself would be a stranger rule to explain.
+    /// <para>
+    /// A restore that fails doesn't hold up the dashboard. The board is connected either way, and
+    /// the settings it didn't get are ones the user can apply from the Profiles page — which is a
+    /// good deal easier to do from inside the app than from this page.
+    /// </para>
+    /// </remarks>
+    private async Task OpenDashboardAsync()
+    {
+        try
+        {
+            if (await Restore.ApplyStartupAsync() is { } done)
+                Snackbar.Add(done, Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+        }
+
+        Nav.NavigateTo("dashboard");
+    }
+
+    private async Task Disconnect() => await Keyboard.DisconnectAsync();
+}

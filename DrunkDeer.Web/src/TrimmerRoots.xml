@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Keeps the profile types whole through publish trimming.
+
+  KeyboardProfile is serialised by reflection (KeyboardProfile.ToJson/FromJson), which the trimmer
+  flags as IL2026: nothing in the code statically reads these properties, so a trimmer that decides
+  to touch them is free to drop them, and saving a profile would quietly produce JSON with fields
+  missing — in the published site only, never in development or in the tests.
+
+  This is insurance, not a fix for a live bug. Measured 2026-07-15: publishing *without* this file
+  round-trips a profile correctly, because the app publishes with TrimMode=partial and neither
+  project marks DrunkDeer as IsTrimmable, so the SDK assembly is not trimmed at all today. What
+  makes it worth keeping is the failure mode rather than the odds — turning on full trimming to
+  shrink the PWA download is an obvious future step, and it would break saving silently and only in
+  production. Only the types that cross the JSON boundary are rooted, so nothing else is pinned.
+-->
+<linker>
+  <assembly fullname="DrunkDeer">
+    <type fullname="DrunkDeer.Protocol.KeyboardProfile" preserve="all" />
+    <type fullname="DrunkDeer.Protocol.KeyDepthProfile" preserve="all" />
+    <type fullname="DrunkDeer.Protocol.KeyboardTheme" preserve="all" />
+    <type fullname="DrunkDeer.Protocol.KeyColor" preserve="all" />
+    <type fullname="DrunkDeer.Protocol.RgbColor" preserve="all" />
+  </assembly>
+</linker>

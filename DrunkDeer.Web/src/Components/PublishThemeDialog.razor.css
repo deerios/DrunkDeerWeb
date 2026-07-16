@@ -1,0 +1,9 @@
+/* The same padded box the gallery's cards give their boards — the theme being published is drawn
+   here exactly as it will be drawn there. See ThemeCard.razor.css: the board sizes itself to the
+   width it is given, so this only has to be a box. */
+.publish-thumb {
+    padding: 12px;
+    background: #101013;
+    border: 1px solid var(--mud-palette-lines-default, #2a2a2f);
+    border-radius: var(--mud-default-borderradius, 6px);
+}

@@ -1,0 +1,61 @@
+@page "/profiles"
+
+<PageTitle>Profiles</PageTitle>
+
+@* A page rather than a dashboard tab (FUTURE_PLAN §5.3): a profile covers the whole board, so
+   unlike the actuation and lighting panels it has nothing to do with the key selection, and
+   nothing to gain from sitting beside the keyboard. *@
+
+<MudText Typo="Typo.h5" Class="mb-4">Profiles</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="7" lg="5">
+        <ProfilePanel />
+    </MudItem>
+    <MudItem xs="12" md="5" lg="7">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2" Class="mb-2">About profiles</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-2">
+
+                <MudText Typo="Typo.h5" Color="Color.Primary" Class="mb-2">What is a profile?</MudText>
+                    <MudText Typo="Typo.body1" Class="mb-4">
+                        Think of a <strong>profile</strong> as a saved snapshot of your keyboard's custom settings. It bundles three things together:
+                    </MudText>
+                    
+                    <MudList T="string" Dense="true" Class="mb-6">
+                        <MudListItem Icon="@Icons.Material.Filled.SettingsInputAntenna">
+                            <MudText Typo="Typo.body1"><strong>Key Sensitivity:</strong> How far down you have to press a key for it to register.</MudText>
+                        </MudListItem>
+                        <MudListItem Icon="@Icons.Material.Filled.Palette">
+                            <MudText Typo="Typo.body1"><strong>Lighting:</strong> Your custom colors and backlighting styles.</MudText>
+                        </MudListItem>
+                        <MudListItem Icon="@Icons.Material.Filled.OfflineBolt">
+                            <MudText Typo="Typo.body1"><strong>Rapid-Trigger:</strong> How quickly your keys reset when you let go of them.</MudText>
+                        </MudListItem>
+                    </MudList>
+
+                    <MudDivider Class="my-6" />
+
+                    <!-- Section 2: Where are Profiles Saved -->
+                    <MudText Typo="Typo.h5" Color="Color.Primary" Class="mb-2">Where are profiles saved?</MudText>
+                    <MudList T="string" Dense="true" Class="mb-6">
+                        <MudListItem Icon="@Icons.Material.Filled.Web">
+                            <MudText Typo="Typo.body1">They are saved directly in your <strong>web browser</strong> local storage.</MudText>
+                        </MudListItem>
+                        <MudListItem Icon="@Icons.Material.Filled.Download">
+                            <MudText Typo="Typo.body1">
+                                You can also download them as a file to your computer as a JSON file. You can also use it with <code style="background-color: var(--mud-palette-background-grey); padding: 2px 6px; border-radius: 4px; font-family: monospace;">deerkb</code> in your terminal.
+                            </MudText>
+                        </MudListItem>
+                    </MudList>
+    
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                A profile only records what this session actually set.
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                The keyboard can't report its own settings back, so anything configured before you connected isn't visible here and won't be saved.
+            </MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>

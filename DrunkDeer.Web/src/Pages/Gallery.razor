@@ -1,0 +1,277 @@
+@page "/gallery"
+@inject ThemeGallery Themes
+@inject KeyboardStore Store
+@inject SettingsService Prefs
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Themes</PageTitle>
+
+@* Reachable while disconnected, like Profiles: browsing themes and taking copies of them needs no
+   hardware. Only Preview does, and the card gates that itself. *@
+
+@* Stopping a preview is the Preview button's own job — see ThemeCard — so there is nothing up here
+   but the heading and the way in to publishing one of your own. *@
+<div class="d-flex align-center justify-space-between mb-4">
+    <MudText Typo="Typo.h5">Theme Gallery</MudText>
+    <div class="d-flex align-center gap-2">
+        @* The gallery is fetched once per page load, so a theme merged while this tab was open is
+           not in it. This is how you go and look, without reloading the whole app. *@
+        <MudTooltip Text="Check for newly published themes">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Disabled="@_refreshing"
+                           OnClick="RefreshAsync" aria-label="Refresh the theme gallery" />
+        </MudTooltip>
+        @* Not disabled while disconnected: publishing a theme is about a profile you have saved, and
+           needs the keyboard no more than saving it did. *@
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Upload"
+                   OnClick="PublishAsync">Publish a theme</MudButton>
+    </div>
+</div>
+
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Choose from user-submitted themes! Use <strong>Copy</strong> to save a theme as your own personal profile, which
+    you can customize and turn on anytime in the <MudLink Href="profiles">Profiles</MudLink> section.
+
+    @if (!Store.IsConnected)
+    {
+        <text><br /><br /><strong>No keyboard connected:</strong> Please <MudLink Href="">connect your keyboard</MudLink> to use this feature.</text>
+    }
+</MudText>
+
+@if (_entries is null && _error is null)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else if (_error is not null)
+{
+    @* There is nothing to fall back to and that is deliberate — see ThemeGallery. A gallery that
+       quietly showed a stale copy of itself would be worse than saying so. *@
+    <MudAlert Severity="Severity.Warning" Dense="true">
+        <div class="d-flex align-center gap-4">
+            <span>The theme gallery couldn't be loaded. @_error</span>
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="LoadAsync">Try again</MudButton>
+        </div>
+    </MudAlert>
+}
+else if (_entries is not null)
+{
+    <div class="d-flex align-center flex-wrap gap-4 mb-4">
+        <MudTextField T="string" Value="@Query" ValueChanged="SearchAsync" DebounceInterval="150"
+                      Placeholder="Search themes and authors" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Clearable="true" Class="gallery-search" />
+
+        @if (MineAvailable)
+        {
+            @* Not tabs: this is a filter like the others, and a tab strip would say the gallery has
+               two halves when it has one with a lens over it. *@
+            @* No Dense: MudToggleGroup has no such parameter and the analyzer says so (MUD0002) —
+               it would have compiled and quietly done nothing. Size is the one it has. *@
+            <MudToggleGroup T="bool" Value="Mine" ValueChanged="MineChangedAsync" Color="Color.Primary"
+                            CheckMark="false" Size="Size.Small" SelectionMode="MudBlazor.SelectionMode.SingleSelection">
+                <MudToggleItem Value="false">All themes</MudToggleItem>
+                <MudToggleItem Value="true">My themes</MudToggleItem>
+            </MudToggleGroup>
+        }
+    </div>
+
+    @if (Author is not null)
+    {
+        <MudChipSet T="string" Class="mb-4">
+            <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined" OnClose="@(() => FilterByAuthorAsync(null))">
+                Themes by @Author
+            </MudChip>
+        </MudChipSet>
+    }
+
+    @if (_matching.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">@NothingFound</MudAlert>
+    }
+    else
+    {
+        <MudGrid>
+            @foreach (var entry in _page)
+            {
+                <MudItem xs="12" sm="6" lg="4">
+                    @* Keyed on the id: a page turn re-uses these components, and without a key
+                       Blazor would hand card 1 a new Entry and leave the old board rendered under
+                       it until the new theme arrived. *@
+                    <ThemeCard @key="entry.Id" Entry="@entry" Mine="@IsMine(entry)" />
+                </MudItem>
+            }
+        </MudGrid>
+
+        @if (PageCount > 1)
+        {
+            <div class="d-flex justify-center mt-6">
+                <MudPagination Count="@PageCount" Selected="@Page" SelectedChanged="PageChangedAsync"
+                               Color="Color.Primary" Rectangular="true" />
+            </div>
+        }
+
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-flex justify-center mt-2">
+            @Showing
+        </MudText>
+    }
+}
+
+@code {
+    // The filters live in the URL rather than in fields, so that a search, an author and a page are
+    // a place you can link to, share, and go Back from. Clicking an author on a card is an ordinary
+    // <a href> for exactly this reason.
+    [SupplyParameterFromQuery(Name = "q")] private string? Query { get; set; }
+    [SupplyParameterFromQuery(Name = "author")] private string? Author { get; set; }
+    [SupplyParameterFromQuery(Name = "page")] private int? PageParam { get; set; }
+    [SupplyParameterFromQuery(Name = "mine")] private bool Mine { get; set; }
+
+    private IReadOnlyList<GalleryEntry>? _entries;
+    private IReadOnlyList<GalleryEntry> _matching = [];
+    private IReadOnlyList<GalleryEntry> _page = [];
+    private string? _error;
+    private bool _refreshing;
+
+    /// <summary>The account the user says is theirs, if they have said.</summary>
+    private string? Me => string.IsNullOrWhiteSpace(Prefs.Current.GitHubUsername) ? null : Prefs.Current.GitHubUsername.Trim();
+
+    /// <summary>Whether there is anything for a "My themes" filter to do.</summary>
+    /// <remarks>
+    /// Hidden rather than shown-and-empty when no username is set: a filter that can only ever say
+    /// "none" is a worse way to learn about the setting than the prompt below.
+    /// </remarks>
+    private bool MineAvailable => Me is not null;
+
+    private int Page => Math.Clamp(PageParam ?? 1, 1, PageCount);
+    private int PageCount => GalleryFilter.PageCount(_matching.Count);
+
+    private bool IsMine(GalleryEntry entry) =>
+        Me is { } me && string.Equals(entry.SubmittedBy, me, StringComparison.OrdinalIgnoreCase);
+
+    private string Showing =>
+        _matching.Count <= GalleryFilter.PageSize
+            ? $"{_matching.Count} theme{(_matching.Count == 1 ? "" : "s")}"
+            : $"{(Page - 1) * GalleryFilter.PageSize + 1}–{(Page - 1) * GalleryFilter.PageSize + _page.Count} of {_matching.Count} themes";
+
+    private string NothingFound => (Mine, Author, string.IsNullOrWhiteSpace(Query)) switch
+    {
+        (true, _, _) when Me is not null => $"No themes in the gallery were published by {Me}. Themes you publish show up here once they're merged.",
+        (_, not null, _) => $"{Author} has no themes matching that.",
+        (_, _, false) => "No themes match that search.",
+        _ => "There are no themes in the gallery yet.",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        // A keyboard can be unplugged while this page is open, and the blurb above says whether
+        // previewing is possible at all. Which theme is up is the cards' business, not this page's.
+        Store.Changed += OnChanged;
+        await LoadAsync();
+    }
+
+    // The query string changes without the page being rebuilt — an author link, the pager, Back —
+    // so the filtering is redone here rather than only on load.
+    protected override void OnParametersSet() => Refilter();
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        _entries = null;
+        try
+        {
+            _entries = await Themes.ListAsync();
+            Refilter();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    /// <summary>Goes back to the repository, rather than showing what was fetched on page load.</summary>
+    /// <remarks>
+    /// The gallery holds onto the catalogue for the life of the page — that is what makes a page of
+    /// cards one fetch — so nothing short of throwing it away asks GitHub anything. Reset drops the
+    /// fetched themes too, since a refresh is also the answer to a card that came out wrong.
+    /// </remarks>
+    private async Task RefreshAsync()
+    {
+        // A second press while the first is in flight would fetch the catalogue twice and race two
+        // loads into _entries. The button disables itself for the moment it takes.
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            Themes.Reset();
+            await LoadAsync();
+            if (_error is null)
+                Snackbar.Add($"Gallery refreshed — {_entries?.Count ?? 0} themes.", Severity.Success);
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private void Refilter()
+    {
+        if (_entries is null) return;
+        _matching = GalleryFilter.Matching(_entries, Query, Author, Mine ? Me : null);
+        // Read through the Page property, which clamps: the number arrives in the URL where anybody
+        // can type one, and a theme unpublished under a deep link makes an honest one go stale.
+        _page = GalleryFilter.Page(_matching, Page);
+    }
+
+    private Task SearchAsync(string? query) => GoAsync(query: query, page: 1);
+
+    private Task FilterByAuthorAsync(string? author) => GoAsync(author: author, page: 1);
+
+    private Task MineChangedAsync(bool mine) => GoAsync(mine: mine, page: 1);
+
+    private Task PageChangedAsync(int page) => GoAsync(page: page);
+
+    /// <summary>Rewrites the URL, which is what actually moves the page.</summary>
+    /// <remarks>
+    /// Every filter change resets to page 1 — staying on page 4 of a search that now has one page is
+    /// how you get an empty gallery that looks broken. The paging itself is the one caller that says
+    /// which page it wants.
+    /// </remarks>
+    private Task GoAsync(string? query = null, string? author = null, bool? mine = null, int? page = null)
+    {
+        var url = Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            // Blank rather than null clears the parameter out of the URL entirely, which is what
+            // keeps a plain /gallery from growing "?q=&author=" as somebody clears a box.
+            ["q"] = Blank(query ?? Query),
+            ["author"] = Blank(author ?? Author),
+            ["mine"] = (mine ?? Mine) ? true : null,
+            ["page"] = (page ?? Page) is var p && p > 1 ? p : null,
+        });
+        Nav.NavigateTo(url);
+        return Task.CompletedTask;
+    }
+
+    private static string? Blank(string? text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task PublishAsync()
+    {
+        var dialog = await Dialogs.ShowAsync<PublishThemeDialog>("Publish a theme",
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        var result = await dialog.Result;
+        if (result?.Canceled != false) return;
+
+        // The theme is not in the gallery yet and this deliberately does not say it is: all the app
+        // did was hand GitHub a filled-in form. Whether it gets published is between the submitter
+        // and the checks on the other end, and it only starts once they submit the issue.
+        Snackbar.Add(
+            "GitHub is open in a new tab. Submit the issue there and your theme will be checked and " +
+            "published automatically.", Severity.Info);
+    }
+
+    // Deliberately does not stop a running preview: the board is mid-change and navigating away is
+    // not a reason to leave it that way. ThemePreview outlives this page and finishes the job.
+    public void Dispose() => Store.Changed -= OnChanged;
+}

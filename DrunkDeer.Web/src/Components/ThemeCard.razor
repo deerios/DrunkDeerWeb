@@ -1,0 +1,224 @@
+@inject ThemeGallery Gallery
+@inject ThemePreview Preview
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+@implements IDisposable
+
+@* One theme in the gallery: what it looks like on the board, who made it, and what you can do with
+   it — take a copy, put it on the keyboard for a few seconds, and, if you published it, change or
+   remove it.
+
+   The card fetches its own theme's lighting when it is shown. That is what makes the gallery lazy:
+   only the cards on the page exist, so only the page's themes are fetched. See
+   ThemeGallery.LoadThemeAsync. *@
+
+<MudCard Elevation="1" Class="theme-card">
+    @if (_theme is not null)
+    {
+        @* The thumbnail is the real keyboard view with a theme handed to it rather than a session, so
+           a theme is drawn by exactly the code that draws the live board — see KeyboardView.Theme. *@
+        <div class="thumb @(IsPreviewing ? "previewing" : "")">
+            <KeyboardView Theme="@_theme.Theme" />
+        </div>
+    }
+    else
+    {
+        @* Holds the thumbnail's shape while it loads, so a page of cards does not jump about as each
+           theme arrives. The board is roughly 8:3. *@
+        <div class="thumb thumb-placeholder">
+            @if (_failed is null)
+            {
+                <MudSkeleton SkeletonType="SkeletonType.Rectangle" Height="100%" Width="100%" />
+            }
+            else
+            {
+                <div class="thumb-failed">
+                    <MudIcon Icon="@Icons.Material.Filled.CloudOff" Color="Color.Secondary" />
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Couldn't load this theme</MudText>
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="LoadAsync">Try again</MudButton>
+                </div>
+            }
+        </div>
+    }
+    <MudCardContent Class="py-3">
+        <MudText Typo="Typo.subtitle1">@Entry.Name</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            by
+            @* A link rather than a button: it goes to a real address that can be shared, opened in a
+               new tab, and gone back from. *@
+            <MudLink Href="@AuthorUrl" Typo="Typo.body2" Underline="Underline.Hover">@Entry.Author</MudLink>
+        </MudText>
+    </MudCardContent>
+    <MudCardActions Class="pt-0 flex-wrap">
+        <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.ContentCopy"
+                   Disabled="@(_copying || _theme is null)" OnClick="CopyAsync">Copy</MudButton>
+        <MudSpacer />
+        @* The countdown lives inside the button rather than beside it: it is the button's own state
+           running out, and a bar somewhere else would need explaining. The button stays live while
+           the preview is up and turns into its own off switch — the theme is on the board because
+           this button put it there, so this is where a user looks to take it back off. *@
+        <MudButton Variant="Variant.Text" Size="Size.Small" Class="preview-btn"
+                   StartIcon="@(IsPreviewing ? Icons.Material.Filled.Stop : Icons.Material.Filled.Visibility)"
+                   Disabled="@(!Preview.CanPreview || _theme is null)" OnClick="TogglePreviewAsync">
+            @(IsPreviewing ? "Stop previewing" : "Preview")
+            @if (IsPreviewing)
+            {
+                @* Keyed on nothing but its own existence: it only exists while this theme is up, so
+                   the CSS animation starts when the element does and no timer has to drive it.
+                   The duration comes from the service so the bar and the revert can't disagree. *@
+                <span class="countdown" style="--preview-secs:@PreviewSeconds"></span>
+            }
+        </MudButton>
+
+        @if (Mine)
+        {
+            @* Only on your own themes, and only a way in to the two forms — whether either is allowed
+               is decided by the account that submits the issue, not by this card being drawn.
+
+               The divider is outside the button row on purpose: a MudDivider is an <hr>, and an <hr>
+               inside a flex row is a flex item that takes the width, squashing both buttons to their
+               64px min-width and clipping the labels to "MODIF" and "UNPUBLI". *@
+            <div class="mine-actions">
+                <MudDivider Class="mb-2" />
+                <div class="mine-buttons">
+                    <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Edit"
+                               Disabled="@(_theme is null)" OnClick="ModifyAsync">Modify</MudButton>
+                    <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.DeleteOutline" OnClick="UnpublishAsync">Unpublish</MudButton>
+                </div>
+            </div>
+        }
+    </MudCardActions>
+</MudCard>
+
+@code {
+    /// <summary>The theme this card is for, as the catalogue lists it.</summary>
+    [Parameter, EditorRequired] public GalleryEntry Entry { get; set; } = default!;
+
+    /// <summary>Whether this is one the user published, and so may change or remove.</summary>
+    [Parameter] public bool Mine { get; set; }
+
+    private GalleryTheme? _theme;
+    private string? _failed;
+    private bool _copying;
+
+    private bool IsPreviewing => Preview.Active?.Id == Entry.Id;
+
+    private string AuthorUrl => $"gallery?author={Uri.EscapeDataString(Entry.Author)}";
+
+    private static string PreviewSeconds =>
+        ThemePreview.Duration.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    // Every card listens: starting a preview here ends one over there, and that card has to stop
+    // claiming the board.
+    protected override void OnInitialized() => Preview.Changed += OnPreviewChanged;
+
+    // Not OnInitializedAsync: a page turn re-uses these components with a new Entry rather than
+    // building new ones, so a card that only loaded on initialise would keep showing the theme it
+    // had on page 1.
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_theme?.Id == Entry.Id) return;
+        _theme = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var wanted = Entry;
+        _failed = null;
+        try
+        {
+            var loaded = await Gallery.LoadThemeAsync(wanted);
+            // The page may have turned while this was in flight, and a card that painted whatever
+            // it happened to be waiting for would show the wrong theme under the right name.
+            if (Entry.Id == wanted.Id) _theme = loaded;
+        }
+        catch (Exception ex)
+        {
+            if (Entry.Id == wanted.Id) _failed = ex.Message;
+        }
+    }
+
+    private void OnPreviewChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task CopyAsync()
+    {
+        if (_theme is null) return;
+        _copying = true;
+        try
+        {
+            var name = await Gallery.CopyToProfileAsync(_theme);
+            // The saved name is worth showing rather than a bare "Copied": it is usually not the
+            // theme's name — profile names can't hold spaces, and a second copy gets numbered — so
+            // this is how the user knows what to look for on the Profiles page.
+            Snackbar.Add($"Copied to the profile “{name}”.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _copying = false;
+        }
+    }
+
+    private async Task TogglePreviewAsync()
+    {
+        if (IsPreviewing)
+        {
+            await Preview.StopAsync();
+            return;
+        }
+
+        if (_theme is null) return;
+
+        // Warned before the theme goes on rather than after it fails to come off: this session
+        // never set the board's lighting, so there is nothing recorded to put back. See
+        // ThemePreview.CanRestore.
+        var permanent = !Preview.CanRestore;
+        try
+        {
+            await Preview.StartAsync(_theme);
+            if (permanent)
+                Snackbar.Add(
+                    $"“{Entry.Name}” will remain because the keyboard can't report the lighting " +
+                    "it had before, so there's nothing to revert back to.", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task ModifyAsync()
+    {
+        var dialog = await Dialogs.ShowAsync<UpdateThemeDialog>($"Modify “{Entry.Name}”",
+            new DialogParameters<UpdateThemeDialog> { { x => x.Theme, Entry } },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        var result = await dialog.Result;
+        if (result?.Canceled != false) return;
+
+        // Deliberately does not say the theme is changed: all the app did was hand GitHub a filled-in
+        // form, and whether it is applied is between the submitter and the checks on the other end.
+        Snackbar.Add(
+            "GitHub is open in a new tab. Submit the issue there and the theme will be updated automatically.",
+            Severity.Info);
+    }
+
+    private async Task UnpublishAsync()
+    {
+        var dialog = await Dialogs.ShowAsync<UnpublishThemeDialog>($"Unpublish “{Entry.Name}”",
+            new DialogParameters<UnpublishThemeDialog> { { x => x.Theme, Entry } },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        var result = await dialog.Result;
+        if (result?.Canceled != false) return;
+
+        Snackbar.Add(
+            "GitHub is open in a new tab. Submit the issue there and the theme will be removed automatically.",
+            Severity.Info);
+    }
+
+    public void Dispose() => Preview.Changed -= OnPreviewChanged;
+}

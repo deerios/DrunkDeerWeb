@@ -1,0 +1,44 @@
+@* Taking one of your own themes back out of the gallery.
+
+   A dialog rather than a message box because the way out of here is a link — see ThemePublisher for
+   why the app hands the browser an href instead of talking to GitHub, and PublishThemeDialog for the
+   same shape. There is nothing to choose, so this is only what it means and the way to go and do it. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudText Class="mb-4">
+            <strong>@Theme.Name</strong> will be taken out of the gallery, so nobody else can find or copy it.
+        </MudText>
+
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            Anyone who already copied it into a profile of their own keeps their copy — this only removes it from the
+            gallery. The theme stays in the themes repository's history, so a removal you regret can be undone by a
+            maintainer.
+        </MudText>
+
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-3">
+            Only the GitHub account that published a theme can remove it, so submit the issue from the account you
+            published this one with.
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Keep it</MudButton>
+
+        @* A real link, like every other way out of this app to GitHub. It carries no theme, so it is
+           short whatever the theme is and there is no clipboard fallback to need. *@
+        <MudButton Variant="Variant.Filled" Color="Color.Error" StartIcon="@Icons.Custom.Brands.GitHub"
+                   Href="@ThemePublisher.BuildRemoveIssueUrl(Theme.Id, Theme.Name)" Target="_blank"
+                   OnClick="Sent">Unpublish on GitHub</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+
+    /// <summary>The published theme being removed.</summary>
+    [Parameter, EditorRequired] public GalleryEntry Theme { get; set; } = default!;
+
+    // The link does the opening; this only closes the dialog behind it. Nothing is removed at this
+    // point — the user still has to submit the issue on GitHub.
+    private void Sent() => Dialog.Close(DialogResult.Ok(Theme.Name));
+}

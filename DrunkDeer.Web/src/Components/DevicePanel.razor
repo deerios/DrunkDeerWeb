@@ -1,0 +1,155 @@
+@using System.Text
+@using DrunkDeer.Protocol
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+@* Everything the keyboard said about itself during the identity handshake, plus what the SDK
+   concluded from it. This is the panel to read when a board behaves unlike its model's
+   description: the model is resolved from three identity bytes, and precision mode is then
+   inferred from the firmware version, so a wrong answer here explains a wrong answer everywhere. *@
+
+<MudPaper Class="pa-4" Elevation="1">
+    <MudText Typo="Typo.h6" Class="mb-1">Device</MudText>
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        What this keyboard reported when it connected.
+    </MudText>
+
+    <MudDivider Class="my-3" />
+
+    @if (_session is null)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">Not connected.</MudText>
+    }
+    else
+    {
+        <MudSimpleTable Dense="true" Hover="false" Striped="false" Elevation="0" Class="device-facts">
+            <tbody>
+                <tr>
+                    <td>Model</td>
+                    <td>@_session.Model.Name <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-inline">(@_session.Model.Slug)</MudText></td>
+                </tr>
+                <tr>
+                    <td>Variant</td>
+                    <td>@_session.Variant</td>
+                </tr>
+                <tr>
+                    <td>Firmware</td>
+                    <td>
+                        <strong>@_session.FirmwareVersion</strong>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-inline">
+                            (0x@_session.FirmwareVersion.ToString("X2"))
+                        </MudText>
+                    </td>
+                </tr>
+                <tr>
+                    <td>Precision</td>
+                    <td>@_session.PrecisionMode</td>
+                </tr>
+                <tr>
+                    <td>Depth range</td>
+                    <td>@_session.MinDepthMm.ToString("0.0#") – @_session.MaxDepthMm.ToString("0.0#") mm</td>
+                </tr>
+                <tr>
+                    <td>Keys</td>
+                    <td>@_session.Layout.Count with geometry</td>
+                </tr>
+            </tbody>
+        </MudSimpleTable>
+
+        <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Capabilities</MudText>
+        @if (_capabilities.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">None declared for this model.</MudText>
+        }
+        else
+        {
+            <div class="d-flex flex-wrap gap-1">
+                @foreach (var capability in _capabilities)
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                             Color="Color.Primary">@capability</MudChip>
+                }
+            </div>
+        }
+
+        <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Programmable surface</MudText>
+        @* Key maps, macros and Dynamic Keystroke all live behind the FuncBlock gateway. Saying so
+           here, with the reason, beats a keymap tab that exists but refuses every write. *@
+        @* align-start, not align-center: this text wraps to three lines in the md column, and a
+           centred icon with nothing stopping it shrinking ends up underneath the wrapped text. *@
+        <div class="d-flex align-start gap-2 programmable">
+            <MudIcon Size="Size.Small"
+                     Icon="@(_programmable ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Cancel)"
+                     Color="@(_programmable ? Color.Success : Color.Default)" />
+            <MudText Typo="Typo.body2">
+                @(_programmable
+                    ? "Key maps, macros and Dynamic Keystroke are available."
+                    : "This model has no FuncBlock gateway, so key maps, macros and Dynamic Keystroke are unavailable.")
+            </MudText>
+        </div>
+
+        <MudButton Class="mt-4" Variant="Variant.Outlined" Size="Size.Small" FullWidth="true"
+                   StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="CopyReport">
+            Copy device report
+        </MudButton>
+    }
+</MudPaper>
+
+@code {
+    private KeyboardSession? _session;
+    private List<string> _capabilities = [];
+    private bool _programmable;
+
+    protected override void OnInitialized()
+    {
+        _session = Keyboard.Session;
+        if (_session is null) return;
+
+        // Enum.ToString on a [Flags] value gives "TurboMode, LogoLight"; splitting it keeps each
+        // flag a separate chip and drops None to an empty list rather than a chip reading "None".
+        _capabilities = _session.Model.Capabilities == Capabilities.None
+            ? []
+            : [.. _session.Model.Capabilities.ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries)];
+
+        _programmable = _session.TryGetFeatures<IProgrammableKeyboardFeatures>(out _);
+    }
+
+    private string BuildReport()
+    {
+        var session = _session;
+        if (session is null) return "Not connected.";
+
+        var report = new StringBuilder();
+        report.AppendLine("DrunkDeer device report");
+        report.AppendLine($"  Model:        {session.Model.Name} ({session.Model.Slug})");
+        report.AppendLine($"  Variant:      {session.Variant}");
+        report.AppendLine($"  Firmware:     {session.FirmwareVersion} (0x{session.FirmwareVersion:X2})");
+        report.AppendLine($"  Precision:    {session.PrecisionMode}");
+        report.AppendLine($"  Depth range:  {session.MinDepthMm:0.0#} - {session.MaxDepthMm:0.0#} mm");
+        report.AppendLine($"  Capabilities: {(_capabilities.Count == 0 ? "none" : string.Join(", ", _capabilities))}");
+        report.AppendLine($"  FuncBlock:    {(_programmable ? "yes" : "no")}");
+        report.AppendLine($"  Layout keys:  {session.Layout.Count}");
+        report.AppendLine($"  Connection:   {(Store.IsDemo ? "demo (simulated)" : "WebHID")}");
+        return report.ToString();
+    }
+
+    private async Task CopyReport()
+    {
+        try
+        {
+            // The button click is the user gesture the clipboard API needs; no module import here,
+            // so nothing can spend the gesture before the write lands.
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", BuildReport());
+            Snackbar.Add("Device report copied.", Severity.Success);
+        }
+        catch (JSException)
+        {
+            // Clipboard access can be refused outright (permissions policy, insecure origin). The
+            // report is on screen anyway, so this is a convenience that is allowed to fail.
+            Snackbar.Add("Couldn't reach the clipboard - the details above can be read off directly.",
+                Severity.Warning);
+        }
+    }
+}

@@ -1,0 +1,250 @@
+@page "/settings"
+@inject SettingsService Prefs
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject ProfileLibrary Library
+@inject SessionRestore Restore
+@inject ISnackbar Snackbar
+
+<PageTitle>Settings</PageTitle>
+
+@* Reachable while disconnected, like Profiles and the gallery: these are preferences about the app,
+   and none of them touches the keyboard at the moment it's set. *@
+
+<MudText Typo="Typo.h5" Class="mb-4">Settings</MudText>
+
+<MudContainer MaxWidth="MaxWidth.Small" Class="px-0">
+
+    @* ── Editing ────────────────────────────────────────────────────────── *@
+
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudText Typo="Typo.h6" Class="mb-1">Editing</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">
+            How the panels behave while you're changing things.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudSwitch T="bool" Value="@_edited.LiveEditColors" ValueChanged="SetLiveEdit"
+                   Color="Color.Primary" Label="Live-edit lighting" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block ml-1 mb-4">
+            Writes each colour and brightness to the keyboard as you set it, instead of waiting for
+            <b>Apply</b>. It starts once you've coloured the board yourself at least once in a
+            session — the first write of a session sets every key you didn't select, so that one
+            always waits for you to ask for it.
+        </MudText>
+
+        <MudSwitch T="bool" Value="@_edited.SkipWriteConfirmations" ValueChanged="SetSkipConfirmations"
+                   Color="Color.Primary" Label="Skip confirmations" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block ml-1">
+            Applies straight away, without first showing what a write covers. Those dialogs are
+            there because a write lands on the whole board, including keys you didn't select — with
+            this on, <b>Apply</b> is the decision. Deleting or overwriting a saved profile still
+            asks: re-applying fixes a board, but nothing brings a profile back.
+        </MudText>
+    </MudPaper>
+
+    @* ── Gallery ────────────────────────────────────────────────────────── *@
+
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudText Typo="Typo.h6" Class="mb-1">Theme gallery</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">
+            Finding the themes you've published.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudTextField T="string" Value="@_edited.GitHubUsername" ValueChanged="SetGitHubUsername"
+                      Label="Your GitHub username" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      Placeholder="octocat" Immediate="false" Clearable="true"
+                      Error="@(!UsernameLooksRight)" ErrorText="That isn't a GitHub username." />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block ml-1 mt-1">
+            Themes in the <MudLink Href="gallery" Typo="Typo.caption">gallery</MudLink> published by this account get a
+            <b>My themes</b> filter and a way to modify or unpublish them. This isn't a login - the app never signs in
+            to GitHub.
+        </MudText>
+    </MudPaper>
+
+    @* ── Startup ────────────────────────────────────────────────────────── *@
+
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudText Typo="Typo.h6" Class="mb-1">Startup</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">
+            What happens when you open this page.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudSwitch T="bool" Value="@_edited.AutoConnect" ValueChanged="SetAutoConnect"
+                   Color="Color.Primary" Label="Default keyboard" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block ml-1 mb-4">
+            Reconnects to your keyboard and opens the dashboard, without asking. This can only reach
+            a keyboard you've already allowed this site to use, and it puts nothing on the board by
+            itself. With nothing plugged in, you land here on the Connect page as usual.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="mb-1">Once it's connected, apply:</MudText>
+        @* One choice rather than checkboxes: a profile and your last changes are each a whole
+           board's worth of settings, so doing both would mean one silently undoing the other. *@
+        <MudRadioGroup T="StartupAction" Value="@_edited.Startup" ValueChanged="SetStartup">
+            <MudRadio T="StartupAction" Value="@StartupAction.Nothing" Color="Color.Primary" Dense="true">
+                Nothing
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                    Leave the keyboard however you last left it. It keeps its settings itself.
+                </MudText>
+            </MudRadio>
+            <MudRadio T="StartupAction" Value="@StartupAction.Profile" Color="Color.Primary" Dense="true">
+                A saved profile
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                    The same one every time, whatever you were last doing.
+                </MudText>
+            </MudRadio>
+            <MudRadio T="StartupAction" Value="@StartupAction.LastChanges" Color="Color.Primary" Dense="true">
+                My last changes
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                    Saves what you do here as you do it, and puts it back next time — including
+                    changes you never saved as a profile.
+                </MudText>
+            </MudRadio>
+        </MudRadioGroup>
+
+        @if (_edited.Startup == StartupAction.Profile)
+        {
+            <div class="mt-3">
+                @if (_saved.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true">
+                        You have no saved profiles yet. Save one from the
+                        <MudLink Href="profiles">Profiles</MudLink> page, or copy a theme from the
+                        <MudLink Href="gallery">gallery</MudLink>, and it'll show up here.
+                    </MudAlert>
+                }
+                else
+                {
+                    <MudSelect T="string" Value="@_edited.StartupProfile" ValueChanged="SetStartupProfile"
+                               Label="Profile" Variant="Variant.Outlined" Margin="Margin.Dense"
+                               Error="@(_edited.StartupProfile is null)"
+                               ErrorText="Pick a profile, or nothing will be applied.">
+                        @foreach (var name in _saved)
+                        {
+                            <MudSelectItem T="string" Value="@name">@name</MudSelectItem>
+                        }
+                    </MudSelect>
+                }
+            </div>
+        }
+    </MudPaper>
+
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        Settings are saved as you change them, in this browser only — like your profiles. Clearing
+        this site's data resets them.
+    </MudText>
+</MudContainer>
+
+@code {
+    // The page's own copy. Settings are saved on each change rather than behind a Save button — one
+    // switch is one decision, and a form that can be abandoned half-set is a worse fit than that.
+    // The copy is still what's bound, so nothing reaches the rest of the app until it's stored.
+    private AppSettings _edited = new();
+    private IReadOnlyList<string> _saved = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _edited = Prefs.Current.Clone();
+
+        try
+        {
+            _saved = await Library.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't read saved profiles: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private Task SetLiveEdit(bool on)
+    {
+        _edited.LiveEditColors = on;
+        return SaveAsync();
+    }
+
+    private Task SetSkipConfirmations(bool on)
+    {
+        _edited.SkipWriteConfirmations = on;
+        return SaveAsync();
+    }
+
+    private Task SetAutoConnect(bool on)
+    {
+        _edited.AutoConnect = on;
+        return SaveAsync();
+    }
+
+    private async Task SetStartup(StartupAction action)
+    {
+        _edited.Startup = action;
+
+        // Choosing "a saved profile" with exactly one saved is a choice already made. Any more than
+        // that and picking for them would be a guess with someone's lighting on the end of it.
+        if (action == StartupAction.Profile && _edited.StartupProfile is null && _saved.Count == 1)
+            _edited.StartupProfile = _saved[0];
+
+        await SaveAsync();
+
+        // Turning "my last changes" on with a keyboard already connected should mean this board,
+        // now — otherwise nothing is stored until the next edit, and closing the tab straight after
+        // choosing it would restore nothing at all.
+        if (action == StartupAction.LastChanges && Store.IsConnected)
+        {
+            try
+            {
+                await Restore.SaveNowAsync(Keyboard.CaptureProfile());
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Couldn't save the current settings: {ex.Message}", Severity.Warning);
+            }
+        }
+    }
+
+    private Task SetStartupProfile(string? name)
+    {
+        _edited.StartupProfile = name;
+        return SaveAsync();
+    }
+
+    /// <summary>GitHub's own rule for an account name, so a typo is caught here rather than by an empty gallery.</summary>
+    /// <remarks>
+    /// Letters, digits and single hyphens, up to 39 characters, never starting or ending with one.
+    /// The same pattern <see cref="ThemeGallery"/> holds the catalogue's own names to — they are
+    /// compared against each other, so a name this accepted and that refused would match nothing and
+    /// say nothing about why.
+    /// </remarks>
+    private static readonly System.Text.RegularExpressions.Regex GitHubUsername =
+        new(@"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$");
+
+    private bool UsernameLooksRight =>
+        string.IsNullOrWhiteSpace(_edited.GitHubUsername) || GitHubUsername.IsMatch(_edited.GitHubUsername.Trim());
+
+    private Task SetGitHubUsername(string? name)
+    {
+        // Stored as null rather than "" when cleared, so "has the user told us" is one question with
+        // one answer rather than two spellings of no.
+        _edited.GitHubUsername = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        // Saved even when it does not look like a username: it is their text and the field says what
+        // is wrong with it. Nothing reads it but a comparison that will simply match nothing.
+        return SaveAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            await Prefs.SaveAsync(_edited);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't save your settings: {ex.Message}", Severity.Error);
+        }
+    }
+}

@@ -1,0 +1,43 @@
+/* The colour the picker is currently holding, shown as itself rather than as a hex string.
+   The picker's field and the hex field below it both say what the colour is in text; this is
+   the only thing on the panel that shows it. */
+
+.colour-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.swatch {
+    /* It is a button because it opens the picker, so the browser's own button painting has to come
+       off first — the padding alone would inset the colour into a frame rather than filling the chip. */
+    appearance: none;
+    padding: 0;
+    cursor: pointer;
+    /* Without this the flex row squashes the swatch to a slot rather than letting the picker
+       shrink — a colour chip a few px wide reads as nothing at all. */
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 4px;
+    /* The chip has to stay visible against both the dark panel and its own colour, so it gets a
+       hairline rather than relying on contrast with the background. */
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.swatch:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.6);
+}
+
+/* :focus-visible rather than :focus so the ring answers the keyboard without drawing a box round
+   every mouse click. The chip is any colour at all, so the ring goes outside it. */
+.swatch:focus-visible {
+    outline: 2px solid var(--mud-palette-primary);
+    outline-offset: 2px;
+}
+
+.swatch:disabled {
+    cursor: default;
+    opacity: 0.5;
+}

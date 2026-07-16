@@ -1,0 +1,380 @@
+@using System.Globalization
+@using DrunkDeer.Protocol
+@inject KeyboardService Keyboard
+@inject KeyboardStore Store
+@inject SelectionStore Selection
+@inject SettingsService Settings
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@implements IDisposable
+
+@* The actuation side panel (FUTURE_PLAN §5.4): edits the actuation point of whatever is
+   selected on the on-screen keyboard. See KeyboardService.ApplyActuationAsync for why the
+   baseline for unselected keys is asked for up front rather than assumed. *@
+
+<MudPaper Class="pa-4" Elevation="1">
+    <MudText Typo="Typo.h6" Class="mb-1">Actuation</MudText>
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        How far a key travels before it registers.
+    </MudText>
+
+    <MudDivider Class="my-3" />
+
+    @if (Selection.IsEmpty)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            Select keys on the keyboard to set their actuation point.
+        </MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2" Class="mb-1">
+            <b>@Selection.Count</b> @(Selection.Count == 1 ? "key" : "keys") selected
+        </MudText>
+        <MudSlider T="float" Value="_depthMm" ValueChanged="OnDepthChanged"
+                   Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm"
+                   Step="0.05f" Immediate="true" Class="mt-2"
+                   ValueLabel="true" Disabled="@_busy">
+            @Mm(_depthMm)
+        </MudSlider>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+            The marker on each selected key shows where this lands. Apply to write it to the board.
+        </MudText>
+
+        @if (_depthMm > SafeMaxDepthMm)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+                Above @Mm(SafeMaxDepthMm) some switches may never register. @Mm(_depthMm) is close to the
+                bottom of the key's travel.
+            </MudAlert>
+        }
+
+        @if (!Keyboard.DepthsAreKnown)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                Please note that this keyboard does not support reading back the current configuration on the device.  
+                Applying your changes will reset any unchanged keys back to their default values.
+            </MudAlert>
+            <MudNumericField T="float" @bind-Value="_baselineMm" Label="All other keys"
+                             Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm" Step="0.05f"
+                             Adornment="Adornment.End" AdornmentText="mm" Format="0.00"
+                             Culture="@CultureInfo.InvariantCulture"
+                             Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-3"
+                             Disabled="@_busy" />
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mt-3">
+                Keys you haven't selected keep the values this session last wrote.
+            </MudText>
+        }
+
+        <MudButton Class="mt-3" FullWidth="true" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Save" Disabled="@_busy" OnClick="ApplyAsync">
+            @(_busy ? "Applying…" : "Apply to keyboard")
+        </MudButton>
+    }
+
+    <MudDivider Class="my-4" />
+
+    <MudSwitch T="bool" Value="@Keyboard.RapidTriggerEnabled" ValueChanged="ToggleRapidTriggerAsync"
+               Color="Color.Primary" Disabled="@_busy" Label="Rapid trigger" />
+    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+        Registers each press and release from the direction of travel rather than a fixed point.
+        The switch is board-wide; the sensitivity below is per key.
+    </MudText>
+
+    @* Only while rapid trigger is on: these two points are what it triggers from, so they do
+       nothing on a board that isn't using it. Unlike the switch above they are per key, which is
+       why they live behind the same selection as the actuation slider. *@
+    @if (Keyboard.RapidTriggerEnabled)
+    {
+        <MudText Typo="Typo.subtitle2" Class="mt-4">Key sensitivity</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mb-1">
+            How far a key has to move, after stopping, to register again.
+        </MudText>
+
+        @if (Selection.IsEmpty)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-2">
+                Select keys on the keyboard to set their sensitivity.
+            </MudText>
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mt-2">
+                Press to activate: @Mm(_downstrokeMm)
+            </MudText>
+            <MudSlider T="float" @bind-Value="_downstrokeMm"
+                       Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm"
+                       Step="0.05f" Immediate="true" Disabled="@_busy" />
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                Release reset: @Mm(_upstrokeMm)
+            </MudText>
+            <MudSlider T="float" @bind-Value="_upstrokeMm"
+                       Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm"
+                       Step="0.05f" Immediate="true" Disabled="@_busy" />
+
+            @if (!Keyboard.SensitivityIsKnown)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                    Sensitivity can't be read back either, so applying also sets every key you
+                    didn't select.
+                </MudAlert>
+                <MudNumericField T="float" @bind-Value="_baselineDownstrokeMm" Label="All other keys: press"
+                                 Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm" Step="0.05f"
+                                 Adornment="Adornment.End" AdornmentText="mm" Format="0.00"
+                                 Culture="@CultureInfo.InvariantCulture"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-3"
+                                 Disabled="@_busy" />
+                <MudNumericField T="float" @bind-Value="_baselineUpstrokeMm" Label="All other keys: release"
+                                 Min="@Keyboard.MinDepthMm" Max="@Keyboard.MaxDepthMm" Step="0.05f"
+                                 Adornment="Adornment.End" AdornmentText="mm" Format="0.00"
+                                 Culture="@CultureInfo.InvariantCulture"
+                                 Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-3"
+                                 Disabled="@_busy" />
+            }
+
+            <MudButton Class="mt-3" FullWidth="true" Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Speed" Disabled="@_busy"
+                       OnClick="ApplySensitivityAsync">
+                @(_busy ? "Applying…" : "Apply sensitivity")
+            </MudButton>
+        }
+    }
+</MudPaper>
+
+@code {
+    // Depths above this are legal but risky: the SDK warns at the same threshold because a key
+    // set this deep may never reach its actuation point.
+    private const float SafeMaxDepthMm = 3.3f;
+
+    private float _depthMm = 2.0f;
+    private float _baselineMm = 2.0f;
+    // The session's own seed for both sensitivity points, so an untouched panel proposes what the
+    // board is already assumed to hold rather than a number of the panel's invention.
+    private float _downstrokeMm = 0.25f;
+    private float _upstrokeMm = 0.25f;
+    private float _baselineDownstrokeMm = 0.25f;
+    private float _baselineUpstrokeMm = 0.25f;
+    private bool _busy;
+
+    protected override void OnInitialized()
+    {
+        Selection.Changed += OnSelectionChanged;
+        _depthMm = Math.Clamp(_depthMm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+        _baselineMm = _depthMm;
+        ClampSensitivity();
+        SyncDepthFromSelection();
+        SyncSensitivityFromSelection();
+        PublishPreview();
+    }
+
+    // MinDepthMm is 0.2mm on the A75 and the seed is 0.25mm, but neither is guaranteed on a model
+    // this app has never seen, and a slider below its own Min silently reads back as Min.
+    private void ClampSensitivity()
+    {
+        _downstrokeMm = Math.Clamp(_downstrokeMm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+        _upstrokeMm = Math.Clamp(_upstrokeMm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+        _baselineDownstrokeMm = Math.Clamp(_baselineDownstrokeMm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+        _baselineUpstrokeMm = Math.Clamp(_baselineUpstrokeMm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+    }
+
+    /// <summary>Puts the sensitivity sliders on what the selected keys actually hold.</summary>
+    /// <remarks>
+    /// Same contract as <see cref="SyncDepthFromSelection"/>, against its own known-flag: until this
+    /// session has written a sensitivity profile the shadow is the SDK's invented 0.25 mm seed
+    /// rather than anything the board reported.
+    /// </remarks>
+    private void SyncSensitivityFromSelection()
+    {
+        var session = Keyboard.Session;
+        if (session is null || !Keyboard.SensitivityIsKnown) return;
+
+        var key = session.Layout.FirstOrDefault(k => Selection.Contains(k.SlotIndex));
+        if (key is null) return;
+
+        if (Keyboard.GetDownstrokeProfile().TryGetValue(key.Key, out var down))
+            _downstrokeMm = Math.Clamp(down, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+        if (Keyboard.GetUpstrokeProfile().TryGetValue(key.Key, out var up))
+            _upstrokeMm = Math.Clamp(up, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+    }
+
+    /// <summary>Puts the slider on the depth the selected keys actually hold.</summary>
+    /// <remarks>
+    /// The slider is a view of the selection, so it follows both the selection changing and the
+    /// panel being (re)mounted — which is what catches a loaded profile, since applying one happens
+    /// on the Profiles page and coming back rebuilds this panel (as does every tab switch, MudTabs
+    /// disposing the inactive one). Without it the slider kept reading 2.0 mm while the board's
+    /// markers showed the profile's depths.
+    /// <para>
+    /// Gated on <see cref="KeyboardService.DepthsAreKnown"/> for the same reason the markers are
+    /// drawn faintly until then: the session seeds every key at an invented 2.0 mm, and the A75
+    /// cannot report its real depths, so before a write there is nothing here worth reading back.
+    /// </para>
+    /// </remarks>
+    private void SyncDepthFromSelection()
+    {
+        var session = Keyboard.Session;
+        if (session is null || !Keyboard.DepthsAreKnown) return;
+
+        // First selected key in board order stands in for a mixed selection, matching the lighting
+        // panel — and applying then makes the rest match it, which is what the button promises.
+        var key = session.Layout.FirstOrDefault(k => Selection.Contains(k.SlotIndex));
+        if (key is null) return;
+
+        if (Keyboard.GetActuationProfile().TryGetValue(key.Key, out var mm))
+            _depthMm = Math.Clamp(mm, Keyboard.MinDepthMm, Keyboard.MaxDepthMm);
+    }
+
+    private void OnDepthChanged(float mm)
+    {
+        _depthMm = mm;
+        PublishPreview();
+    }
+
+    // The board draws the pending depth on the selected keys, so it has to hear about the slider
+    // as it moves. Nothing is selected means nothing is being edited, so the board shows no preview.
+    private void PublishPreview() =>
+        Keyboard.SetActuationPreview(Selection.IsEmpty ? null : _depthMm);
+
+    private async Task ApplySensitivityAsync()
+    {
+        var keys = SelectedKeys();
+        if (keys.Length == 0) return;
+
+        // Same rule as the actuation write: only the first one of a session touches keys the user
+        // never selected, so only that one has to be confirmed.
+        if (!Keyboard.SensitivityIsKnown && !Settings.Current.SkipWriteConfirmations
+            && !await ConfirmFirstSensitivityWriteAsync(keys.Length))
+            return;
+
+        _busy = true;
+        try
+        {
+            await Keyboard.ApplySensitivityAsync(
+                _downstrokeMm, _upstrokeMm, keys, _baselineDownstrokeMm, _baselineUpstrokeMm);
+            Snackbar.Add(
+                $"Set the sensitivity of {keys.Length} {Noun(keys.Length)} to {Mm(_downstrokeMm)} press, {Mm(_upstrokeMm)} release.",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't apply sensitivity: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task<bool> ConfirmFirstSensitivityWriteAsync(int selected)
+    {
+        int others = Math.Max(0, (Keyboard.Session?.Layout.Count ?? 0) - selected);
+        var body = $"Sets {selected} selected {Noun(selected)} to {Mm(_downstrokeMm)} press / {Mm(_upstrokeMm)} release, "
+            + $"and the other {others} to {Mm(_baselineDownstrokeMm)} / {Mm(_baselineUpstrokeMm)}. "
+            + (Store.IsDemo
+                ? "This is a simulated keyboard, so no hardware is touched."
+                : "This board's rapid trigger sensitivity can't be read back, so any set elsewhere "
+                  + "(for example in the official app) will be overwritten.");
+
+        return await Dialogs.ShowMessageBoxAsync(
+            title: "Set sensitivity on the whole keyboard?",
+            markupMessage: new MarkupString(body),
+            yesText: "Apply", cancelText: "Cancel") == true;
+    }
+
+    private async Task ApplyAsync()
+    {
+        var keys = SelectedKeys();
+        if (keys.Length == 0) return;
+
+        // Only the first write of a session needs confirming: it is the one that writes a value
+        // to keys the user never touched. After that the panel leaves them alone.
+        if (!Keyboard.DepthsAreKnown && !Settings.Current.SkipWriteConfirmations
+            && !await ConfirmFirstWriteAsync(keys.Length))
+            return;
+
+        _busy = true;
+        try
+        {
+            await Keyboard.ApplyActuationAsync(_depthMm, keys, _baselineMm);
+            Snackbar.Add($"Set {keys.Length} {(keys.Length == 1 ? "key" : "keys")} to {Mm(_depthMm)}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't apply actuation: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task<bool> ConfirmFirstWriteAsync(int selected)
+    {
+        int others = Math.Max(0, (Keyboard.Session?.Layout.Count ?? 0) - selected);
+        var body = Store.IsDemo
+            ? $"Sets {selected} selected {Noun(selected)} to {Mm(_depthMm)} and the other {others} to {Mm(_baselineMm)}. "
+              + "This is a simulated keyboard, so no hardware is touched."
+            : $"Sets {selected} selected {Noun(selected)} to {Mm(_depthMm)} and the other {others} to {Mm(_baselineMm)}. "
+              + "This board's existing settings can't be read back, so anything configured elsewhere "
+              + "(for example in the official app) will be overwritten.";
+
+        var result = await Dialogs.ShowMessageBoxAsync(
+            title: "Apply to the whole keyboard?",
+            markupMessage: new MarkupString(body),
+            yesText: "Apply", cancelText: "Cancel");
+        return result == true;
+    }
+
+    private async Task ToggleRapidTriggerAsync(bool enabled)
+    {
+        _busy = true;
+        try
+        {
+            await Keyboard.SetRapidTriggerAsync(enabled);
+            Snackbar.Add($"Rapid trigger {(enabled ? "on" : "off")}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't change rapid trigger: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // The selection is held as firmware slots; the SDK's actuation API speaks DDKey, and the
+    // layout is what maps between them.
+    private DDKey[] SelectedKeys()
+    {
+        var session = Keyboard.Session;
+        if (session is null) return [];
+        return [.. session.Layout.Where(k => Selection.Contains(k.SlotIndex)).Select(k => k.Key)];
+    }
+
+    private void OnSelectionChanged() => _ = InvokeAsync(() =>
+    {
+        // Read the newly selected keys before publishing: the preview draws _depthMm, so syncing
+        // after would push the outgoing selection's depth onto the incoming one.
+        SyncDepthFromSelection();
+        SyncSensitivityFromSelection();
+        PublishPreview();
+        StateHasChanged();
+    });
+
+    private static string Noun(int n) => n == 1 ? "key" : "keys";
+
+    private static string Mm(float v) => v.ToString("0.00", CultureInfo.InvariantCulture) + " mm";
+
+    // Switching to another tab disposes this panel, and a depth nobody is editing any more
+    // shouldn't stay painted on the board.
+    public void Dispose()
+    {
+        Selection.Changed -= OnSelectionChanged;
+        Keyboard.SetActuationPreview(null);
+    }
+}

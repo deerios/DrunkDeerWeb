@@ -1,0 +1,101 @@
+.theme-card {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* The board draws itself at whatever width it is given, so the thumbnail is just a padded box for
+   it to fill — the aspect ratio comes from the layout's own row count (keyboard.js sets the
+   height), not from anything imposed here. */
+.thumb {
+    padding: 12px;
+    background: #101013;
+    border-bottom: 1px solid var(--mud-palette-lines-default, #2a2a2f);
+}
+
+/* While this theme is the one on the real keyboard, the thumbnail stops being a picture of a theme
+   and starts being a picture of the board in front of you. Worth saying. */
+.thumb.previewing {
+    box-shadow: inset 0 0 0 2px var(--mud-palette-info, #4aa8ff);
+}
+
+/* Holds the thumbnail's shape while the theme's own file is being fetched, so a page of cards lays
+   out once rather than shuffling as each one arrives. The number is the A75's own proportions
+   (16.25 x 6 units) plus the padding above — a board this is not is still a board-shaped gap, which
+   is all this has to be. */
+.thumb-placeholder {
+    aspect-ratio: 16.25 / 6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.thumb-failed {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    text-align: center;
+}
+
+/* The two buttons on your own themes sit on their own row: the card's actions are a flex row, and
+   four buttons in one wrap into a shape that reads as a random pile rather than "these two are
+   about publishing". flex-basis takes the whole line, which is what makes them wrap together. */
+.mine-actions {
+    flex-basis: 100%;
+}
+
+/* Deliberately NOT on .mine-actions itself: the divider above these is an <hr>, and an <hr> in a
+   flex row is a flex item that takes the row's width, squashing both buttons to their min-width and
+   clipping the labels. Measured, not guessed — the labels rendered "MODIF" and "UNPUBLI" while the
+   DOM still reported their full text, because innerText does not care about overflow: hidden. */
+.mine-buttons {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Pushes the card's buttons to the bottom regardless of how long the name wrapped. */
+.theme-card ::deep .mud-card-actions {
+    margin-top: auto;
+}
+
+.preview-btn {
+    position: relative;
+    overflow: hidden;
+}
+
+/* The countdown: a bar across the bottom of the Preview button that empties as the theme's time on
+   the board runs out. A CSS animation rather than a timer ticking a progress value through Blazor —
+   the bar only exists while the preview does, so it starts and dies with the element and costs no
+   renders in between. --preview-secs is set from ThemePreview.Duration. */
+.countdown {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: 100%;
+    background: var(--mud-palette-info, #4aa8ff);
+    transform-origin: left center;
+    /* Longhand, not the shorthand: a duration has to be a time, and the var carries a number, so
+       it needs a calc() the shorthand has nowhere to put. */
+    animation-duration: calc(var(--preview-secs, 5) * 1s);
+    animation-name: countdown;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+}
+
+@keyframes countdown {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+}
+
+/* The revert is on a wall clock, so the bar can't slow down to match a reduced-motion preference —
+   it would then finish after the board had already changed back and be lying about the time left.
+   It's a single linear transform of a 2px bar, which is about as calm as a countdown gets; what's
+   dropped instead is the pretence that it's decoration. */
+@media (prefers-reduced-motion: reduce) {
+    .countdown {
+        opacity: 0.6;
+    }
+}

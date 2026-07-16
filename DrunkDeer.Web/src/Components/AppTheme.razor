@@ -1,0 +1,17 @@
+@implements IDisposable
+@inject ThemeService Themes
+
+<MudThemeProvider Theme="@Themes.Current" IsDarkMode="true" />
+
+@*
+    Wraps the theme provider on its own so that re-theming costs one component's render.
+    The accent follows the keyboard, so this re-renders whenever the board's colours change —
+    which it must not turn into a re-render of the router and every page under it.
+*@
+@code {
+    protected override void OnInitialized() => Themes.Changed += OnThemeChanged;
+
+    private void OnThemeChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Themes.Changed -= OnThemeChanged;
+}

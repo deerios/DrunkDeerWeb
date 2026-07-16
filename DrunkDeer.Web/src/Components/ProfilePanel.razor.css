@@ -1,0 +1,58 @@
+/* Compact summary lists: MudBlazor doesn't style a bare <ul>, and the default browser indent
+   pushes these off the narrow side column. */
+.summary {
+	margin: 0;
+	padding-left: 1.1rem;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--mud-palette-text-secondary);
+}
+
+.summary.omitted {
+	color: var(--mud-palette-text-secondary);
+	font-style: italic;
+}
+
+/* The import control: a label styled like MudBlazor's small text button, wrapping a real file
+   input that stays invisible but clickable through the label. */
+.import {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+	padding: 0.25rem 0.5rem;
+	border-radius: var(--mud-default-borderradius);
+	font-size: 0.8125rem;
+	font-weight: 500;
+	line-height: 1.75;
+	text-transform: uppercase;
+	color: var(--mud-palette-text-primary);
+	cursor: pointer;
+	user-select: none;
+}
+
+.import:hover {
+	background: var(--mud-palette-action-default-hover);
+}
+
+.import.disabled {
+	color: var(--mud-palette-action-disabled);
+	pointer-events: none;
+}
+
+/* Hidden, but not display:none — the label's click still has to reach it. ::deep because the
+   input belongs to InputFile, whose element carries no scope attribute of ours. */
+.import ::deep input[type="file"] {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+
+/* A long name has to yield rather than shove the buttons out of the row. */
+.profile-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}

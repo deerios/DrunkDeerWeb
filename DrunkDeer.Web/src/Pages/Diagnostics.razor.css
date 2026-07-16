@@ -1,0 +1,99 @@
+/* This is a div belonging to this page, not MudSimpleTable's root. That matters: CSS isolation
+   rewrites a rule like `.trace {}` into `.trace[b-xxx] {}`, and a child component's own root
+   element carries no scope attribute of ours, so every rule here would match nothing at all.
+   (Rules like `.trace td` do work either way — the scope lands on the td, which is ours.) */
+.trace {
+    /* Long traces stay inside their own box rather than running the page off the bottom, and wide
+       packets scroll here rather than making the page itself scroll sideways. */
+    max-height: 60vh;
+    overflow: auto;
+}
+
+/* MudSimpleTable brings its own scrolling container. Two nested scrollers on the same axis fight
+   over which one moves; the one with the height cap wins. */
+.trace ::deep .mud-table-container {
+    overflow: visible;
+}
+
+/* A wire trace is columns of hex, and hex only lines up in a monospace face. This has to be set on
+   the cells and not inherited from the wrapper: MudBlazor puts its own font-family on the table
+   between the two, and a cell inherits from the nearest ancestor that sets it, not the outermost. */
+.trace td,
+.trace th {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    vertical-align: top;
+}
+
+/* Hex must not wrap — the columns are the whole point of it. Everything else may, and has to:
+   an SDK log line is a sentence, and holding it on one line drags the table wider than the
+   window and puts the bytes off the right-hand edge. */
+.col-time,
+.col-dir,
+.col-bytes {
+    white-space: nowrap;
+}
+
+.col-what {
+    white-space: normal;
+}
+
+.trace th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--mud-palette-surface);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--mud-palette-text-secondary);
+}
+
+.col-time {
+    text-align: right;
+    color: var(--mud-palette-text-secondary);
+    width: 1%;
+}
+
+/* The direction marker is the thing the eye follows down the trace, so it gets colour and the
+   rest of the row doesn't. */
+.col-dir {
+    width: 1%;
+    text-align: center;
+    font-size: 0.875rem;
+    line-height: 1.2;
+}
+
+.col-dir.sent { color: var(--mud-palette-primary); }
+.col-dir.received { color: var(--mud-palette-success); }
+.col-dir.timeout { color: var(--mud-palette-warning); }
+.col-dir.note { color: var(--mud-palette-text-disabled); }
+
+.col-what .name {
+    color: var(--mud-palette-text-primary);
+}
+
+.col-what .detail {
+    margin-left: 0.5rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+.col-bytes {
+    color: var(--mud-palette-text-secondary);
+    width: 100%;
+}
+
+/* A packet that breaks a structural rule of the protocol is the whole reason to read this page;
+   it must not look like the hundred ordinary rows around it. */
+.trace tr.failed .col-what .name,
+.trace tr.failed .col-what .detail {
+    color: var(--mud-palette-error);
+}
+
+/* Sits beside a dense select, which is taller than the line of text next to it. */
+.capture-hint {
+    flex: 1 1 240px;
+    min-width: 0;
+    white-space: normal;
+}

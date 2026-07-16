@@ -1,0 +1,53 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject KeyboardStore Store
+
+<MudLayout>
+    <MudAppBar Elevation="1">
+        <MudIcon Icon="@Icons.Material.Filled.Keyboard" Class="mr-3" />
+        <MudText Typo="Typo.h6">DrunkDeer</MudText>
+
+        <MudSpacer />
+
+        @if (Store.IsConnected)
+        {
+            @if (Store.IsDemo)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.Science" Color="Color.Info" Size="Size.Small" Class="mr-2">Demo</MudChip>
+            }
+            <MudChip T="string" Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Size="Size.Small">
+                @Store.ModelName (@Store.Variant)
+            </MudChip>
+        }
+        else
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.UsbOff" Color="Color.Default" Size="Size.Small">Not connected</MudChip>
+        }
+    </MudAppBar>
+
+    <MudDrawer @bind-Open="_drawerOpen" Elevation="1" Variant="@DrawerVariant.Responsive">
+        <NavMenu />
+    </MudDrawer>
+
+    <MudMainContent>
+        @if (Store.IsUnverifiedModel)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="ma-2" Variant="Variant.Filled">
+                Protocol unverified on this model — flash writes are at your own risk.
+            </MudAlert>
+        }
+        <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
+            @Body
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private bool _drawerOpen = true;
+
+    protected override void OnInitialized() => Store.Changed += OnStoreChanged;
+
+    private void OnStoreChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Store.Changed -= OnStoreChanged;
+}
