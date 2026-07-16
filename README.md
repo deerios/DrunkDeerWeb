@@ -1,7 +1,6 @@
 # DrunkDeer Web
 
-A browser configurator for DrunkDeer analog HID keyboards. Blazor WebAssembly, talking to the board
-over WebHID — nothing to install, and no driver or background service.
+A browser configurator for DrunkDeer analog HID keyboards over WebHID.
 
 It does what the vendor's driver does, minus the driver: per-key actuation depth and rapid trigger,
 per-key lighting and the built-in effects, profiles saved in the browser, a device panel that
@@ -11,7 +10,6 @@ actual packets going over the wire.
 ## Requirements
 
 - A Chromium-based browser (Chrome, Edge, Opera). **WebHID is not implemented in Firefox or Safari**,
-  and no amount of this app's code changes that — the pages load and the board cannot be reached.
 - An HTTPS origin, or `localhost`. WebHID is a powerful feature and browsers refuse it otherwise.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) to build.
 
@@ -38,22 +36,14 @@ NuGet package:
 <PackageReference Include="DrunkDeerSDK" Version="0.2.0" />
 ```
 
-This app is one of its front ends, alongside the `deerkb` CLI. Anything about how a keyboard is
-actually spoken to — packets, models, capabilities — belongs over there, and arrives here by bumping
-that version deliberately. What belongs here is the browser: the WebHID transport, the pages, and
-the theme gallery.
-
-The two repositories were one until the web app was split out, so the SDK's history carries this
-app's early commits.
+This app is one of its front ends, alongside the `deerkb` CLI.
 
 ## Themes
 
 The gallery reads its catalogue from [DrunkDeerThemes](https://github.com/deerios/DrunkDeerThemes),
-a separate repository that anyone can submit to. Nothing it serves is trusted: both the catalogue
-and each theme are validated here before being drawn, because the checks that gate a submission live
-in another repository, in another language, and a repository can be wrong about its own rules.
+a separate repository that anyone can submit to.
 
 ## Hardware
 
 Only the **A75** is verified against real hardware. Other models are implemented from the vendor's
-web driver and are not confirmed.
+web driver and are not confirmed. If you face any problems, open an issue or DM me on Discord: @afemaledeer
