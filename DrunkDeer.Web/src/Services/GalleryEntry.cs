@@ -8,6 +8,10 @@ namespace DrunkDeer.Web.Services;
 /// <param name="Author">Who to credit. Free text, and whatever the submitter asked for.</param>
 /// <param name="SubmittedBy">The GitHub account that published it.</param>
 /// <param name="Issue">The issue it was published from. 0 for the themes seeded with the repository.</param>
+/// <param name="Version">
+/// Which revision of the theme's lighting this is. Counts from 1 and goes up each time the theme is
+/// updated.
+/// </param>
 /// <remarks>
 /// <para>
 /// This is everything <c>index.json</c> carries. The lighting lives in <c>themes/&lt;id&gt;.json</c>
@@ -22,5 +26,13 @@ namespace DrunkDeer.Web.Services;
 /// second is evidence — the account GitHub says opened the issue — and it is what "is this one of
 /// mine" is answered with. Neither is a secret; both are already public on the issue.
 /// </para>
+/// <para>
+/// <see cref="Version"/> is the one field here that nothing on screen shows. It exists because an id
+/// alone stopped being enough to name a picture once themes could be updated in place: the file at
+/// <c>themes/&lt;id&gt;.json</c> is rewritten by an update, so anything that remembers a theme by id
+/// and nothing else — <see cref="ThemeCache"/>, which is the reason this is here — would go on
+/// showing the picture from before it. Together the two say which lighting, and that is what the
+/// cache is keyed on.
+/// </para>
 /// </remarks>
-public sealed record GalleryEntry(string Id, string Name, string Author, string SubmittedBy, int Issue);
+public sealed record GalleryEntry(string Id, string Name, string Author, string SubmittedBy, int Issue, int Version = 1);

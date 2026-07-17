@@ -231,20 +231,39 @@ else if (_entries is not null)
 
     private Task PageChangedAsync(int page) => GoAsync(page: page);
 
+    /// <summary>
+    /// One of <see cref="GoAsync"/>'s text filters, as given rather than as read.
+    /// </summary>
+    /// <remarks>
+    /// A wrapper and not a plain string because the two ways of not passing a filter mean opposite
+    /// things: leaving the argument out means "leave this one as it is", while passing null means
+    /// "clear it". A bare <c>string?</c> spells both of those the same way, and the fallback it
+    /// forces — <c>author ?? Author</c> — reads a cleared filter as an absent one and puts the old
+    /// value straight back. That is not hypothetical: it is why the chip's close button and the
+    /// search box's clear button both did nothing. Wrapped, the absent argument is a null
+    /// <c>Filter?</c> and the cleared one is a <c>Filter</c> holding null, and the two stop colliding.
+    /// </remarks>
+    private readonly record struct Filter(string? Value)
+    {
+        // So callers still pass the string itself: GoAsync(author: null) has to keep meaning what it
+        // looks like it means.
+        public static implicit operator Filter(string? value) => new(value);
+    }
+
     /// <summary>Rewrites the URL, which is what actually moves the page.</summary>
     /// <remarks>
     /// Every filter change resets to page 1 — staying on page 4 of a search that now has one page is
     /// how you get an empty gallery that looks broken. The paging itself is the one caller that says
     /// which page it wants.
     /// </remarks>
-    private Task GoAsync(string? query = null, string? author = null, bool? mine = null, int? page = null)
+    private Task GoAsync(Filter? query = null, Filter? author = null, bool? mine = null, int? page = null)
     {
         var url = Nav.GetUriWithQueryParameters(new Dictionary<string, object?>
         {
             // Blank rather than null clears the parameter out of the URL entirely, which is what
             // keeps a plain /gallery from growing "?q=&author=" as somebody clears a box.
-            ["q"] = Blank(query ?? Query),
-            ["author"] = Blank(author ?? Author),
+            ["q"] = Blank(query is { } q ? q.Value : Query),
+            ["author"] = Blank(author is { } a ? a.Value : Author),
             ["mine"] = (mine ?? Mine) ? true : null,
             ["page"] = (page ?? Page) is var p && p > 1 ? p : null,
         });

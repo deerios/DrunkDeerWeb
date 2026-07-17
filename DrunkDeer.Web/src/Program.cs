@@ -43,6 +43,10 @@ builder.Services.AddSingleton<ThemeService>();
 builder.Services.AddSingleton<ProfileLibrary>();
 builder.Services.AddSingleton<BrowserStorage>();
 
+// The gallery's theme files, kept between page loads. Same reasoning as the two above: it is
+// localStorage and no state of its own.
+builder.Services.AddSingleton<ThemeCache>();
+
 // One copy of the user's preferences for the whole app, so a setting changed on the settings page
 // is in force everywhere without anything having to be told.
 builder.Services.AddSingleton<SettingsService>();
@@ -63,6 +67,7 @@ builder.Services.AddSingleton<SessionRestore>();
 builder.Services.AddSingleton(sp => new ThemeGallery(
     sp.GetRequiredService<ProfileLibrary>(),
     new HttpClient(),
+    sp.GetRequiredService<ThemeCache>(),
     sp.GetRequiredService<ILogger<ThemeGallery>>()));
 
 // A preview is a change to the one physical keyboard with a timer on it, so it has to outlive the

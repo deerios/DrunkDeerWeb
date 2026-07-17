@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using DrunkDeer.Web.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.JSInterop;
 using NUnit.Framework;
 
 namespace DrunkDeer.Web.Tests;
@@ -60,17 +61,36 @@ public class ThemeCatalogueFetchTests
 		return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
 	}
 
-	private static (ThemeGallery Gallery, Stub Handler) Gallery(Func<string, HttpResponseMessage> reply)
+	/// <summary>A gallery with a store of its own that starts empty, and the network behind it.</summary>
+	/// <remarks>
+	/// <paramref name="storage"/> is for the tests that care what is in the store — either to seed it,
+	/// to read what was written, or to keep one gallery's store when a second is built over it, which
+	/// is how a second page load is staged.
+	/// </remarks>
+	private static (ThemeGallery Gallery, Stub Handler) Gallery(
+		Func<string, HttpResponseMessage> reply, FakeBrowserStorage? storage = null)
 	{
 		var handler = new Stub(reply);
-		return (new ThemeGallery(null!, new HttpClient(handler), NullLogger<ThemeGallery>.Instance), handler);
+		var cache = new ThemeCache(new BrowserStorage(storage ?? new FakeBrowserStorage()));
+		return (new ThemeGallery(null!, new HttpClient(handler), cache, NullLogger<ThemeGallery>.Instance), handler);
 	}
 
-	private static string Index(params string[] ids) =>
-		$$"""
-		{"version": 2, "themes": [{{string.Join(",", ids.Select(id =>
-			$$"""{"id": "{{id}}", "name": "{{id}}", "author": "DrunkDeer", "submittedBy": "deerios", "issue": 1}"""))}}]}
-		""";
+	private static string Index(params string[] ids) => IndexOf(ids.Select(id => (id, (int?)null)).ToArray());
+
+	/// <summary>A catalogue that says which version each theme is. A null version says nothing at all.</summary>
+	/// <remarks>
+	/// Concatenated rather than interpolated, for the reason given on <see cref="ThemeFile"/>: the
+	/// entry ends in a run of braces and a raw interpolated literal turns that into a puzzle.
+	/// </remarks>
+	private static string IndexOf(params (string Id, int? Version)[] themes)
+	{
+		var entries = themes.Select(t =>
+			"{\"id\": \"" + t.Id + "\", \"name\": \"" + t.Id + "\", \"author\": \"DrunkDeer\", " +
+			"\"submittedBy\": \"deerios\", \"issue\": 1" +
+			(t.Version is { } v ? ", \"version\": " + v : "") + "}");
+
+		return "{\"version\": 2, \"themes\": [" + string.Join(",", entries) + "]}";
+	}
 
 	/// <summary>The lighting every theme in these tests has. R=120 is what the assertions look for.</summary>
 	private const string Lighting = """{"brightness": 9, "baseColor": {"r": 120, "g": 20, "b": 0}}""";
@@ -157,10 +177,11 @@ public class ThemeCatalogueFetchTests
 	}
 
 	[Test]
-	public async Task ATheme_IsFetchedPlain()
+	public async Task AFirstVersionOfATheme_IsFetchedPlain()
 	{
-		// A theme file is written once under an id that is never reused, so a cached one is never
-		// wrong. Busting these would cost the sharing that makes paging cheap and buy nothing.
+		// A theme nobody has updated is at the address it has always been at, so every cache between
+		// here and GitHub goes on answering for it. Busting these unconditionally would cost the
+		// sharing that makes paging cheap and buy nothing.
 		var (gallery, handler) = Gallery(Repository("ember"));
 		var entry = (await gallery.ListAsync()).Single();
 
@@ -168,6 +189,25 @@ public class ThemeCatalogueFetchTests
 
 		Assert.That(handler.Requested, Does.Contain(ThemeGallery.ThemeUrl("ember")));
 	}
+
+	[Test]
+	public async Task AnUpdatedTheme_IsFetchedFromAnAddressTheCachesHaveNotSeen()
+	{
+		// The trap the version has to spring. An update rewrites themes/<id>.json in place, and both
+		// GitHub's CDN and the browser hold that address for far longer than an update takes — so a
+		// refetch that asked the old question would be answered with the picture from before it, and
+		// the version would have bought nothing.
+		var (gallery, handler) = Gallery(url =>
+			IsIndex(url) ? Ok(IndexOf(("ember", 4))) : Ok(ThemeFile("ember")));
+		var entry = (await gallery.ListAsync()).Single();
+
+		await gallery.LoadThemeAsync(entry);
+
+		var asked = handler.Requested.Single(u => !IsIndex(u));
+		Assert.That(asked, Is.Not.EqualTo(ThemeGallery.ThemeUrl("ember")), "the address must differ from the old version's");
+		Assert.That(asked, Is.EqualTo(ThemeGallery.ThemeUrl("ember", 4)));
+	}
+
 
 	// ── When it does not work ────────────────────────────────────────────────
 
@@ -332,6 +372,218 @@ public class ThemeCatalogueFetchTests
 
 		Assert.That(handler.Asked.Count(u => u == ThemeGallery.IndexUrl), Is.EqualTo(2));
 		Assert.That(handler.Asked.Count(u => u == ThemeGallery.ThemeUrl("ember")), Is.EqualTo(2));
+	}
+
+	// ── Kept between page loads ──────────────────────────────────────────────
+
+	/// <summary>Where <see cref="ThemeCache"/> puts a theme. Spelled out rather than asked for.</summary>
+	/// <remarks>
+	/// A test that built the key the same way the code does would pass whatever the code did with it,
+	/// including using a different key on every load. This is the key, written down.
+	/// </remarks>
+	private static string StoredKey(string id) => "drunkdeer.theme." + id;
+
+	/// <summary>A repository that stops answering for themes once the first load is done.</summary>
+	/// <remarks>
+	/// How "it did not fetch" is asserted without trusting a call count: if the second load reaches
+	/// the network at all, it fails outright rather than quietly passing.
+	/// </remarks>
+	private static Func<string, HttpResponseMessage> Offline(params string[] ids) => url =>
+		IsIndex(url) ? Ok(Index(ids)) : throw new HttpRequestException("no network");
+
+	[Test]
+	public async Task AThemeAlreadyLookedAt_IsNotFetchedOnTheNextPageLoad()
+	{
+		// The point of the whole thing: a page turn fetches twelve theme files, and browsing the
+		// gallery, closing the tab and coming back should not cost them all again.
+		var storage = new FakeBrowserStorage();
+		var (first, _) = Gallery(Repository("ember"), storage);
+		await first.LoadThemeAsync((await first.ListAsync()).Single());
+
+		// A second gallery over the same storage: a new page load, in every way that matters here.
+		var (second, _) = Gallery(Offline("ember"), storage);
+		var theme = await second.LoadThemeAsync((await second.ListAsync()).Single());
+
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(120));
+	}
+
+	[Test]
+	public async Task AnUpdatedTheme_IsNotAnsweredWithTheStoredCopy()
+	{
+		// The bug the version exists to stop, and the reason an id alone is not a key: the file at
+		// themes/<id>.json is rewritten by an update, so a store keyed by id would go on showing the
+		// old picture on every load from here on, and no amount of refreshing would shift it.
+		var storage = new FakeBrowserStorage();
+		var (first, _) = Gallery(Repository("ember"), storage);
+		await first.LoadThemeAsync((await first.ListAsync()).Single());
+
+		// The same theme, now version 2, with different lighting behind it.
+		var updated = ThemeFile("ember").Replace("\"r\": 120", "\"r\": 7");
+		var (second, _) = Gallery(url => IsIndex(url) ? Ok(IndexOf(("ember", 2))) : Ok(updated), storage);
+		var theme = await second.LoadThemeAsync((await second.ListAsync()).Single());
+
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(7), "the updated picture, not the stored one");
+	}
+
+	[Test]
+	public async Task AnUpdatedTheme_ReplacesTheCopyItSupersedes()
+	{
+		// One key per theme, not one per version. Nothing here can enumerate localStorage to go and
+		// collect the old ones, so an update that left its predecessor behind would fill the origin up
+		// with revisions nothing will ever read again.
+		var storage = new FakeBrowserStorage();
+		var (first, _) = Gallery(Repository("ember"), storage);
+		await first.LoadThemeAsync((await first.ListAsync()).Single());
+
+		var (second, _) = Gallery(url => IsIndex(url) ? Ok(IndexOf(("ember", 2))) : Ok(ThemeFile("ember")), storage);
+		await second.LoadThemeAsync((await second.ListAsync()).Single());
+
+		Assert.That(storage.Stored.Keys, Is.EqualTo(new[] { StoredKey("ember") }));
+	}
+
+	[Test]
+	public async Task OnlyTheThemesLookedAt_AreStored()
+	{
+		var storage = new FakeBrowserStorage();
+		var (gallery, _) = Gallery(Repository("ember", "nord", "matrix"), storage);
+		var entries = await gallery.ListAsync();
+
+		await gallery.LoadThemeAsync(entries.Single(e => e.Id == "nord"));
+
+		Assert.That(storage.Stored.Keys, Is.EqualTo(new[] { StoredKey("nord") }));
+	}
+
+	[Test]
+	public async Task TheCatalogue_IsNeverStored()
+	{
+		// It is the thing that says which stored themes are still true, so it has to come from the
+		// repository every time. Storing it would also be the stale gallery ThemeGallery refuses to
+		// have — see the note there about there being no offline fallback.
+		var storage = new FakeBrowserStorage();
+		var (gallery, _) = Gallery(Repository("ember"), storage);
+
+		await gallery.ListAsync();
+
+		Assert.That(storage.Stored, Is.Empty);
+	}
+
+	[Test]
+	public async Task AThemeThatWouldNotDraw_IsNotStored()
+	{
+		// Storing it would mean failing the same check on every load for ever, over a file the
+		// repository is going to serve again anyway.
+		var storage = new FakeBrowserStorage();
+		var (gallery, _) = Gallery(url => IsIndex(url) ? Ok(Index("ember")) : Ok("<html>nope</html>"), storage);
+		var entry = (await gallery.ListAsync()).Single();
+
+		Assert.ThrowsAsync<InvalidDataException>(() => gallery.LoadThemeAsync(entry));
+		Assert.That(storage.Stored, Is.Empty);
+	}
+
+	[Test]
+	public async Task AStoredThemeIsReadTheWayAFetchedOneIs()
+	{
+		// This is a string out of the user's own browser: anybody with the devtools open can write it,
+		// and it must not be a way to get a theme onto the page that a fetch would have refused.
+		var storage = new FakeBrowserStorage();
+		storage.Stored[StoredKey("ember")] =
+			"""{"version": 1, "file": "{\"id\": \"ember\", \"theme\": {\"brightness\": 99}}"}""";
+		var (gallery, handler) = Gallery(Repository("ember"), storage);
+
+		var theme = await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		// Brightness 99 is off the scale the keyboard has, so the stored copy is refused — and the
+		// repository's answer, which is fine, is what gets drawn.
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(120));
+		Assert.That(handler.Requested, Does.Contain(ThemeGallery.ThemeUrl("ember")));
+	}
+
+	[Test]
+	public async Task AStoredThemeThatIsRefused_IsClearedOutRatherThanLeftToFailForEver()
+	{
+		var storage = new FakeBrowserStorage();
+		storage.Stored[StoredKey("ember")] = """{"version": 1, "file": "<html>nope</html>"}""";
+		var (gallery, _) = Gallery(Repository("ember"), storage);
+
+		await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		Assert.That(storage.Stored[StoredKey("ember")], Does.Not.Contain("nope"), "the bad copy should be gone");
+		Assert.That(storage.Stored[StoredKey("ember")], Does.Contain("baseColor"), "and the fetched one kept in its place");
+	}
+
+	[Test]
+	public async Task ARubbishValueUnderTheKey_IsJustAMiss()
+	{
+		var storage = new FakeBrowserStorage();
+		storage.Stored[StoredKey("ember")] = "not json at all";
+		var (gallery, _) = Gallery(Repository("ember"), storage);
+
+		var theme = await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(120));
+	}
+
+	[Test]
+	public async Task AStoredThemeOverTheSizeLimit_IsRefused()
+	{
+		// A theme too big to have been fetched must not become drawable by being put in the store.
+		var storage = new FakeBrowserStorage();
+		var padding = new string('a', ThemeGallery.MaxThemeBytes + 1);
+		storage.Stored[StoredKey("ember")] = $$"""{"version": 1, "file": "{{padding}}"}""";
+		var (gallery, handler) = Gallery(Repository("ember"), storage);
+
+		await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		Assert.That(handler.Requested, Does.Contain(ThemeGallery.ThemeUrl("ember")));
+	}
+
+	[Test]
+	public async Task ABrowserThatRefusesSiteData_IsJustAGalleryThatFetches()
+	{
+		// Storage can be blocked outright, or the origin can be full — 500 themes will not all fit.
+		// Neither is worth a word to the user: it is the gallery it was before any of this existed.
+		var storage = new FakeBrowserStorage { Fault = new JSException("storage is blocked") };
+		var (gallery, _) = Gallery(Repository("ember"), storage);
+
+		var theme = await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(120));
+	}
+
+	[Test]
+	public async Task Refreshing_GoesPastTheStoredCopyToo()
+	{
+		// A Refresh that fetched the catalogue and then answered every card out of localStorage would
+		// be a Refresh that refreshes nothing the user can see.
+		var storage = new FakeBrowserStorage();
+		var (gallery, handler) = Gallery(Repository("ember"), storage);
+		var entry = (await gallery.ListAsync()).Single();
+		await gallery.LoadThemeAsync(entry);
+
+		gallery.Reset();
+		await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		Assert.That(handler.Asked.Count(u => u == ThemeGallery.ThemeUrl("ember")), Is.EqualTo(2));
+	}
+
+	[Test]
+	public async Task AfterARefresh_TheStoreIsTrustedAgain()
+	{
+		// The distrust is one fetch long, not for the rest of the page: once the theme has been
+		// fetched again, the stored copy is the network's answer and there is nothing to distrust.
+		var storage = new FakeBrowserStorage();
+		var (gallery, handler) = Gallery(Repository("ember"), storage);
+		var entry = (await gallery.ListAsync()).Single();
+		await gallery.LoadThemeAsync(entry);
+
+		gallery.Reset();
+		await gallery.LoadThemeAsync((await gallery.ListAsync()).Single());
+
+		// A third page load, with nothing to fetch from: the refetched copy must have been kept.
+		var (later, _) = Gallery(Offline("ember"), storage);
+		var theme = await later.LoadThemeAsync((await later.ListAsync()).Single());
+
+		Assert.That(theme.Theme.BaseColor.R, Is.EqualTo(120));
 	}
 
 	// ── The size limits ──────────────────────────────────────────────────────

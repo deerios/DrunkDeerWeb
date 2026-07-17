@@ -235,6 +235,51 @@ public class ThemeCatalogueTests
 		Assert.That(Read(Catalogue(Entry(submittedBy: "a-real-name")))[0].SubmittedBy, Is.EqualTo("a-real-name"));
 	}
 
+	// ── Which revision it is ─────────────────────────────────────────────────
+
+	private static int VersionOf(string entry) => Read(Catalogue(entry))[0].Version;
+
+	[Test]
+	public void AnEntryWithNoVersion_IsAFirstVersion()
+	{
+		// The field is the themes repository's to write, and every theme published before it started
+		// writing it is a first version. Read this way the two repositories need not ship together:
+		// the field is honoured the moment it appears, and until then nothing is broken.
+		Assert.That(VersionOf(Entry()), Is.EqualTo(ThemeGallery.FirstVersion));
+	}
+
+	[Test]
+	public void AnEntryThatSaysWhichVersionItIs_IsTakenAtItsWord()
+	{
+		Assert.That(VersionOf("""{"id": "ember", "name": "Ember", "author": "x", "issue": 1, "version": 6}"""),
+			Is.EqualTo(6));
+	}
+
+	[TestCase(0)]
+	[TestCase(-3)]
+	public void AVersionThatIsNotAVersion_IsCorrectedRatherThanDropped(int version)
+	{
+		// A theme everybody can see is not worth losing over a field that only decides whether its
+		// picture is fetched or remembered — at worst a stored copy is kept when it should not have
+		// been, and the picture is still the repository's.
+		var entry = $$"""{"id": "ember", "name": "Ember", "author": "x", "issue": 1, "version": {{version}}}""";
+
+		var themes = Read(Catalogue(entry));
+
+		Assert.That(themes, Has.Count.EqualTo(1), "the theme itself is fine");
+		Assert.That(themes[0].Version, Is.EqualTo(ThemeGallery.FirstVersion));
+	}
+
+	[Test]
+	public void AVersionThatIsNotANumber_TakesItsEntryWithIt()
+	{
+		// The same trade the rest of the catalogue makes: it fails the read, and one bad entry is one
+		// bad entry.
+		var entry = """{"id": "ember", "name": "Ember", "author": "x", "issue": 1, "version": "latest"}""";
+
+		Assert.That(Read(Catalogue(entry)), Is.Empty);
+	}
+
 	// ── A theme's own file ───────────────────────────────────────────────────
 
 	private static readonly GalleryEntry Ember = new("ember", "Ember", "DrunkDeer", "deerios", 4);

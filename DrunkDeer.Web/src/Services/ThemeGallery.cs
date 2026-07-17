@@ -62,8 +62,9 @@ public sealed partial class ThemeGallery
     /// would read the same and produce the URL that was just cached — the one case this exists for.
     /// </para>
     /// <para>
-    /// Only the catalogue. A theme file is written once under an id that is never reused, so a cached
-    /// one is never wrong — and busting those would throw away the sharing that makes paging cheap.
+    /// Only the catalogue, and only because it is the one file here that is rewritten at an address
+    /// somebody comes back to. A theme file is versioned instead — see <see cref="ThemeUrl"/> — which
+    /// gets the same result without throwing away the sharing that makes paging cheap.
     /// </para>
     /// </remarks>
     private static string IndexFetchUrl() => $"{IndexUrl}?t={Guid.NewGuid():N}";
@@ -97,6 +98,10 @@ public sealed partial class ThemeGallery
     /// <summary>Most themes the gallery will list.</summary>
     public const int MaxThemes = 500;
 
+    /// <summary>What a theme that has never been updated is, and what an entry saying nothing is.</summary>
+    /// <remarks>Counted from 1 rather than 0 because it is a revision people can be told about.</remarks>
+    public const int FirstVersion = 1;
+
     // Mirrors tools/lib/validate.mjs in the themes repository. Those are the numbers a submission is
     // actually held to; these are this app refusing to render what it would not have accepted.
     private const int MaxThemeNameLength = 40;
@@ -107,6 +112,7 @@ public sealed partial class ThemeGallery
 
     private readonly ProfileLibrary _profiles;
     private readonly HttpClient _http;
+    private readonly ThemeCache _cache;
     private readonly ILogger<ThemeGallery> _log;
 
     private Task<IReadOnlyList<GalleryEntry>>? _catalogue;
@@ -116,10 +122,15 @@ public sealed partial class ThemeGallery
     // by MaxThemes, and a theme is a few KB.
     private readonly Dictionary<string, Task<GalleryTheme>> _themes = new(StringComparer.OrdinalIgnoreCase);
 
-    public ThemeGallery(ProfileLibrary profiles, HttpClient http, ILogger<ThemeGallery> log)
+    // Themes whose stored copy is not to be trusted for the next fetch, because Reset was pressed
+    // over them. Emptied an id at a time as each is fetched again — see FetchThemeAsync.
+    private readonly HashSet<string> _stale = new(StringComparer.OrdinalIgnoreCase);
+
+    public ThemeGallery(ProfileLibrary profiles, HttpClient http, ThemeCache cache, ILogger<ThemeGallery> log)
     {
         _profiles = profiles;
         _http = http;
+        _cache = cache;
         _log = log;
     }
 
@@ -153,10 +164,28 @@ public sealed partial class ThemeGallery
     }
 
     /// <summary>Throws away what has been fetched, so the next ask goes to the network.</summary>
-    /// <remarks>What the page's retry button is for.</remarks>
+    /// <remarks>
+    /// <para>
+    /// What the page's retry button is for.
+    /// </para>
+    /// <para>
+    /// Reaches past the in-memory copies to the stored ones (see <see cref="ThemeCache"/>), because a
+    /// refresh is also the answer to a card that came out wrong, and a Refresh that fetched the
+    /// catalogue and then answered every card out of localStorage would be a Refresh that refreshes
+    /// nothing anybody can see. Only the themes this session actually loaded: those are the ones the
+    /// user is looking at and therefore the ones they are pressing the button about, and nothing here
+    /// can enumerate the store to find the rest.
+    /// </para>
+    /// <para>
+    /// Distrusted rather than deleted, and only until each is fetched again. Deleting here would mean
+    /// a Reset whose refetch then failed — the offline case this very button is pressed in — had
+    /// thrown away the copy that was about to be the only one left.
+    /// </para>
+    /// </remarks>
     public void Reset()
     {
         _catalogue = null;
+        foreach (var id in _themes.Keys) _stale.Add(id);
         _themes.Clear();
     }
 
@@ -190,11 +219,29 @@ public sealed partial class ThemeGallery
 
     /// <summary>Where a theme's lighting is fetched from.</summary>
     /// <remarks>
+    /// <para>
     /// Worked out from the id rather than read out of the catalogue, which names no path on purpose.
     /// The id has already been held to <see cref="ValidId"/> — lower case, digits and single dashes —
     /// so there is nothing in it that could point this somewhere else.
+    /// </para>
+    /// <para>
+    /// The version is on the end because an update rewrites the file in place, and everything between
+    /// this app and that file caches it: GitHub's CDN holds it for minutes, the browser holds it for
+    /// longer, and neither is told when it changes. Without this, a theme that had just been updated
+    /// would be fetched from the address it was already cached at and come back as the picture from
+    /// before — which is the same problem <see cref="IndexFetchUrl"/> exists for, one file down, and
+    /// it would defeat the version rather than be defeated by it. Unlike the catalogue's, this value
+    /// is not fresh every time and must not be: the point is a URL that is stable for as long as the
+    /// file is, so the caches can go on doing their job between updates.
+    /// </para>
+    /// <para>
+    /// Left off entirely for a first version, so that the great majority of themes — every one that
+    /// has never been updated — are fetched from the address they have always been fetched from,
+    /// rather than every user in the world re-downloading the gallery to learn nothing changed.
+    /// </para>
     /// </remarks>
-    public static string ThemeUrl(string id) => $"{RawRoot}/themes/{id}.json";
+    public static string ThemeUrl(string id, int version = FirstVersion) =>
+        version > FirstVersion ? $"{RawRoot}/themes/{id}.json?v={version}" : $"{RawRoot}/themes/{id}.json";
 
     private static void Forget<T>(ref Task<T>? field, Task<T> attempt)
     {
@@ -210,11 +257,46 @@ public sealed partial class ThemeGallery
         return entries;
     }
 
+    /// <summary>
+    /// One theme's file, from the browser's own store if this version of it is in there, and from the
+    /// repository otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A stored file is read back through exactly the same <see cref="ReadThemeFile"/> the network's
+    /// answer is, so a cached theme is one a fetch would also have drawn — see
+    /// <see cref="ThemeCache"/> for why that matters. What is not the same is what happens when it
+    /// fails: a bad file out of the repository is thrown, because a card is waiting for it and wants
+    /// to say so, while a bad one out of the store is dropped and fetched, because the repository is
+    /// the authority and there is a working answer one request away. The bad copy is cleared out on
+    /// the way past rather than left to fail the same way on every load.
+    /// </remarks>
     private async Task<GalleryTheme> FetchThemeAsync(GalleryEntry entry)
     {
-        var json = await GetBoundedAsync(ThemeUrl(entry.Id), MaxThemeBytes, $"theme \"{entry.Id}\"")
+        // Removed rather than read, so the distrust lasts exactly one fetch: this is the fetch Reset
+        // asked for, and once it has happened the stored copy is as good as the network's again.
+        var trusted = !_stale.Remove(entry.Id);
+
+        if (trusted && await _cache.ReadAsync(entry.Id, entry.Version).ConfigureAwait(false) is { } stored)
+        {
+            try
+            {
+                return new GalleryTheme(entry, ReadThemeFile(stored, entry, _log));
+            }
+            catch (InvalidDataException ex)
+            {
+                _log.LogWarning(ex, "The stored copy of the theme {Id} isn't one this app can draw; fetching it again.", entry.Id);
+                await _cache.ForgetAsync(entry.Id).ConfigureAwait(false);
+            }
+        }
+
+        var json = await GetBoundedAsync(ThemeUrl(entry.Id, entry.Version), MaxThemeBytes, $"theme \"{entry.Id}\"")
             .ConfigureAwait(false);
-        return new GalleryTheme(entry, ReadThemeFile(json, entry, _log));
+        var theme = ReadThemeFile(json, entry, _log);
+
+        // Stored only once it has been read: a file that would not draw is not worth keeping, and
+        // keeping it would mean the check above runs on every load for ever.
+        await _cache.WriteAsync(entry.Id, entry.Version, json).ConfigureAwait(false);
+        return new GalleryTheme(entry, theme);
     }
 
     /// <summary>The body of <paramref name="url"/>, or a throw as soon as it is over the limit.</summary>
@@ -361,7 +443,42 @@ public sealed partial class ThemeGallery
             submittedBy = "";
         }
 
-        return new GalleryEntry(entry.Id, entry.Name!, entry.Author!, submittedBy, entry.Issue);
+        return new GalleryEntry(entry.Id, entry.Name!, entry.Author!, submittedBy, entry.Issue, ReadVersion(entry, log));
+    }
+
+    /// <summary>Which revision of a theme an entry is, as far as this app can tell.</summary>
+    /// <remarks>
+    /// <para>
+    /// Optional, and absent means <see cref="FirstVersion"/>. That is not leniency for its own sake:
+    /// the field is written by the themes repository's <c>catalogue.mjs</c>, every theme published
+    /// before it started writing it is a first version, and a catalogue is a live file this app does
+    /// not deploy alongside. Read this way, the two repositories need not ship together — the field
+    /// is honoured the moment it appears and nothing breaks in the meantime. The alternative is
+    /// <see cref="IndexVersion"/> 3 and a gallery that is broken for everyone until the other side
+    /// merges, to learn a number this can assume correctly.
+    /// </para>
+    /// <para>
+    /// A version that is not a number at all cannot reach here — it fails the read in
+    /// <see cref="ReadEntry"/> and takes its entry with it, which is the same trade the rest of the
+    /// catalogue makes. One that is a number but not a version — zero, negative — is corrected to
+    /// <see cref="FirstVersion"/> rather than dropped, because a theme everybody can see is not worth
+    /// losing over a field that only decides whether its picture is fetched or remembered. The cost
+    /// of being wrong is bounded by that: at worst a stored copy is kept or discarded when it should
+    /// not have been, and the picture is still the repository's.
+    /// </para>
+    /// </remarks>
+    private static int ReadVersion(IndexEntry entry, ILogger? log)
+    {
+        if (entry.Version is not { } version) return FirstVersion;
+
+        if (version < FirstVersion)
+        {
+            log?.LogWarning("The theme {Id} says it is version {Version}, which is not a version; treated as {First}.",
+                entry.Id, version, FirstVersion);
+            return FirstVersion;
+        }
+
+        return version;
     }
 
     /// <summary>Whether <paramref name="text"/> is something worth putting on a card.</summary>
@@ -503,6 +620,10 @@ public sealed partial class ThemeGallery
         [JsonPropertyName("author")] public string? Author { get; set; }
         [JsonPropertyName("submittedBy")] public string? SubmittedBy { get; set; }
         [JsonPropertyName("issue")] public int Issue { get; set; }
+
+        // Nullable so that "the catalogue didn't say" and "the catalogue said 0" are different
+        // answers: an int would read both as 0, and the first is every theme published so far.
+        [JsonPropertyName("version")] public int? Version { get; set; }
     }
 
     /// <summary>A theme file's shape. Only two of its members are this app's business.</summary>
